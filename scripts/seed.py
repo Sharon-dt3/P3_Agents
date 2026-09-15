@@ -13,7 +13,7 @@ from pathlib import Path
 # this environment (see DECISION_LOG.md).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from p1.storage.db import init_db  # noqa: E402
+from p1.storage.db import init_db
 
 logging.basicConfig(level="INFO")
 
