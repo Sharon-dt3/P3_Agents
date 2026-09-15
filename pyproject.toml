@@ -1,0 +1,29 @@
+[project]
+name = "p1"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Sharon-dt3", email = "323484347+Sharon-dt3@users.noreply.github.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=1.5.0",
+    "apscheduler>=3.11.3",
+    "pydantic>=2.13.5",
+    "python-dotenv>=1.2.3",
+    "sqlalchemy>=2.0.53",
+]
+
+[project.scripts]
+p1 = "p1:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.7",
+]
