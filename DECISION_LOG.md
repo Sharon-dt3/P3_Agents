@@ -53,3 +53,11 @@ approval overhead and narrower scope.
 
 Next step once resolved: run a device-code-flow script to fetch one real
 Teams channel message via Graph, satisfying CHN-01's acceptance test.
+
+## 2026-09-15 -- LLM response cache: flat files, not SQLite
+
+Decision: Cache LLM responses as individual JSON files on disk, keyed by a SHA-256 hash of the full request, rather than a SQLite table.
+
+Context/reasoning: SPN-04 (the SQLite schema) hasn't been built yet and SPN-02 has no dependency on it. Flat files keep the gateway self-contained and testable in isolation now; this can be revisited once the schema exists if a table turns out to be preferable (e.g. for querying cache stats).
+
+Alternatives considered: Waiting to build the cache until after SPN-04 -- rejected, since SPN-02 is on the critical path and gains nothing by blocking on schema work it doesn't need.
