@@ -1,0 +1,28 @@
+{
+  "19:proj-alpha@thread.tacv2": [
+    {
+      "id": "msg-001",
+      "channel_id": "19:proj-alpha@thread.tacv2",
+      "author_id": "priya.sharma",
+      "posted_at": "2026-09-14T09:15:00Z",
+      "body": "Morning update: finished the schema migration, starting on the adapter today."
+    },
+    {
+      "id": "msg-002",
+      "channel_id": "19:proj-alpha@thread.tacv2",
+      "author_id": "james.okafor",
+      "thread_root_id": "msg-001",
+      "posted_at": "2026-09-14T09:20:00Z",
+      "body": "Nice, that unblocks me too."
+    }
+  ],
+  "19:proj-beta@thread.tacv2": [
+    {
+      "id": "msg-101",
+      "channel_id": "19:proj-beta@thread.tacv2",
+      "author_id": "diego.martinez",
+      "posted_at": "2026-09-14T13:05:00Z",
+      "body": "Blocked on the API key rotation, waiting on infra."
+    }
+  ]
+}

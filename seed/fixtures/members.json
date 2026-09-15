@@ -1,0 +1,9 @@
+{
+  "19:proj-alpha@thread.tacv2": [
+    {"id": "priya.sharma", "display_name": "Priya Sharma", "email": "priya@digitalt3.com"},
+    {"id": "james.okafor", "display_name": "James Okafor", "email": "james@digitalt3.com"}
+  ],
+  "19:proj-beta@thread.tacv2": [
+    {"id": "diego.martinez", "display_name": "Diego Martinez", "email": "diego@digitalt3.com"}
+  ]
+}
