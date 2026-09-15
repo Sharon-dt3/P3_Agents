@@ -1,0 +1,97 @@
+import json
+from pathlib import Path
+
+import pytest
+import yaml
+
+from p1.config.loader import ChannelConfigStore
+from p1.storage.db import get_connection, run_migrations
+
+ALPHA = {
+    "channel_id": "chn-alpha", "display_name": "Project Alpha", "allowlisted": True,
+    "roster": ["priya", "james", "wei"],
+    "update_window_start": "09:00:00", "update_window_end": "11:00:00",
+    "timezone": "Asia/Colombo", "working_days": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+    "daily_digest_time": "11:30:00", "weekly_digest_day": "Fri", "weekly_digest_time": "16:00:00",
+    "channel_owner_id": "priya",
+}
+
+BETA = {
+    "channel_id": "chn-beta", "display_name": "Project Beta", "allowlisted": True,
+    "roster": ["james", "wei", "diego"],
+    "update_window_start": "08:00:00", "update_window_end": "10:00:00",
+    "timezone": "America/New_York", "working_days": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+    "daily_digest_time": "10:30:00", "weekly_digest_day": "Thu", "weekly_digest_time": "15:00:00",
+    "channel_owner_id": "diego", "nudge_enabled": True, "escalation_threshold_days": 2,
+}
+
+
+def _write_config(config_dir: Path, data: dict) -> None:
+    (config_dir / f"{data['channel_id']}.yaml").write_text(yaml.safe_dump(data))
+
+
+def test_loads_distinct_configs_for_two_channels(tmp_path):
+    config_dir = tmp_path / "channels"
+    config_dir.mkdir()
+    _write_config(config_dir, ALPHA)
+    _write_config(config_dir, BETA)
+
+    store = ChannelConfigStore(config_dir)
+    configs = store.list_configured_channels()
+
+    assert {c.channel_id for c in configs} == {"chn-alpha", "chn-beta"}
+    alpha = store.get_channel_config("chn-alpha")
+    beta = store.get_channel_config("chn-beta")
+    assert alpha.roster != beta.roster
+    assert alpha.timezone != beta.timezone
+    assert alpha.update_window_start != beta.update_window_start
+
+
+def test_roster_change_takes_effect_with_no_code_change(tmp_path):
+    config_dir = tmp_path / "channels"
+    config_dir.mkdir()
+    _write_config(config_dir, ALPHA)
+
+    store = ChannelConfigStore(config_dir)
+    before = store.get_channel_config("chn-alpha").roster
+
+    edited = dict(ALPHA, roster=["priya", "james"])  # someone left the roster
+    _write_config(config_dir, edited)
+
+    after = store.get_channel_config("chn-alpha").roster
+
+    assert before != after
+    assert after == ["priya", "james"]
+
+
+def test_invalid_config_raises_rather_than_defaulting(tmp_path):
+    config_dir = tmp_path / "channels"
+    config_dir.mkdir()
+    bad = dict(ALPHA, update_window_end="08:00:00")  # ends before it starts
+    _write_config(config_dir, bad)
+
+    store = ChannelConfigStore(config_dir)
+    with pytest.raises(ValueError):
+        store.list_configured_channels()
+
+
+def test_sync_to_db_upserts_channel_and_config(tmp_path):
+    config_dir = tmp_path / "channels"
+    config_dir.mkdir()
+    _write_config(config_dir, ALPHA)
+
+    db_path = tmp_path / "test.db"
+    run_migrations(db_path)
+
+    store = ChannelConfigStore(config_dir)
+    assert store.sync_to_db(db_path) == 1
+
+    conn = get_connection(db_path)
+    row = conn.execute(
+        "SELECT roster, channel_owner_id FROM channel_config WHERE channel_id = ?",
+        ("chn-alpha",),
+    ).fetchone()
+    conn.close()
+
+    assert json.loads(row["roster"]) == ["priya", "james", "wei"]
+    assert row["channel_owner_id"] == "priya"
