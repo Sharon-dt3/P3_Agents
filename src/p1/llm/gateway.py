@@ -174,7 +174,11 @@ class LLMGateway:
         except APIStatusError as exc:
             raise LLMGatewayError(f"Anthropic API error: {exc}") from exc
 
-        text = "".join(block.text for block in resp.content if getattr(block, "type", None) == "text")
+        tool_use_blocks = [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
+        if tool_use_blocks:
+            text = json.dumps(tool_use_blocks[0].input)
+        else:
+            text = "".join(block.text for block in resp.content if getattr(block, "type", None) == "text")
         return text, resp.model, resp.usage.input_tokens, resp.usage.output_tokens
 
     def _call_ollama(self, prompt, system, max_tokens, temperature):
