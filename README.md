@@ -32,7 +32,9 @@ Run tests and lint:
     docs/               implementation plan and other project documentation
     .github/workflows/  CI (lint + test on every push)
 
-See docs/P1_IMPLEMENTATION_PLAN.md for the full architecture and day-by-day build plan.
+See docs/P1_IMPLEMENTATION_PLAN.md for P1's architecture and day-by-day build plan.
+
+See docs/MASTER_IMPLEMENTATION_PLAN.md for the full six-week, three-agent programme plan (P1 -> P2 -> P3), reconciled against all nine source sheets, current build status, and the day-by-day plan through to programme close.
 
 ## Status
 
