@@ -3,6 +3,7 @@ import pytest
 from p1.adapters.factory import get_teams_reader
 from p1.adapters.teams_reader import TeamsChannel, TeamsMember, TeamsMessage
 from p1.adapters.teams_reader_mock import MockTeamsReader
+from p1.governance.scope_gate import ScopedTeamsReader
 
 
 def _reader():
@@ -53,7 +54,8 @@ def test_from_fixtures_loads_committed_seed_data():
 def test_factory_defaults_to_mock(monkeypatch):
     monkeypatch.delenv("TEAMS_READER_MODE", raising=False)
     reader = get_teams_reader()
-    assert isinstance(reader, MockTeamsReader)
+    assert isinstance(reader, ScopedTeamsReader)
+    assert isinstance(reader.wrapped_reader, MockTeamsReader)
 
 
 def test_factory_selects_graph_by_config(monkeypatch):
@@ -64,4 +66,5 @@ def test_factory_selects_graph_by_config(monkeypatch):
     reader = get_teams_reader()
 
     from p1.adapters.teams_reader_graph import GraphTeamsReader
-    assert isinstance(reader, GraphTeamsReader)
+    assert isinstance(reader, ScopedTeamsReader)
+    assert isinstance(reader.wrapped_reader, GraphTeamsReader)

@@ -29,6 +29,13 @@ class ChannelConfigStore:
         file raises -- it is never silently skipped or defaulted."""
         return [self._load_file(path) for path in sorted(self.config_dir.glob("*.yaml"))]
 
+    def list_allowlisted_channels(self) -> list[str]:
+        """Channel IDs whose config marks them allowlisted=True. This is
+        the explicit allowlist the scope gate (CHN-04) enforces against --
+        a channel merely having a config file is not enough on its own,
+        it must also be marked allowlisted."""
+        return [c.channel_id for c in self.list_configured_channels() if c.allowlisted]
+
     def get_channel_config(self, channel_id: str) -> ChannelConfig:
         for config in self.list_configured_channels():
             if config.channel_id == channel_id:
