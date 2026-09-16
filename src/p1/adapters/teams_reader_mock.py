@@ -57,7 +57,10 @@ class MockTeamsReader(TeamsReader):
         else:
             page = list(all_messages)
 
-        return MessagePage(messages=page, delta_token=str(len(all_messages)))
+        # The mock never paginates -- it always returns everything in one
+        # page, so has_more is always False (there's nothing to keep
+        # looping for within a single sync).
+        return MessagePage(messages=page, delta_token=str(len(all_messages)), has_more=False)
 
     def list_replies(self, message_id: str) -> list[TeamsMessage]:
         replies = []
