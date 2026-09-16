@@ -1,0 +1,32 @@
+channel_id: "19:proj-gamma@thread.tacv2"
+display_name: "Project Gamma"
+allowlisted: false
+
+roster:
+  - "noah.becker"
+  - "aisha.rahman"
+  - "wei.chen"
+  - "olivia.dupont"
+  - "mateo.silva"
+
+update_window_start: "09:00:00"
+update_window_end: "11:00:00"
+timezone: "Asia/Colombo"
+working_days: ["Mon", "Tue", "Wed", "Thu", "Fri"]
+
+length_floor: 10
+count_thread_replies: true
+ignore_bots: true
+
+daily_digest_time: "11:30:00"
+weekly_digest_day: "Fri"
+weekly_digest_time: "16:00:00"
+
+nudge_enabled: false
+nudge_cap_per_day: 1
+escalation_threshold_days: 3
+channel_owner_id: "noah.becker"
+
+exceptions: []
+
+version: 1

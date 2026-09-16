@@ -1,9 +1,100 @@
 {
   "19:proj-alpha@thread.tacv2": [
-    {"id": "priya.sharma", "display_name": "Priya Sharma", "email": "priya@digitalt3.com"},
-    {"id": "james.okafor", "display_name": "James Okafor", "email": "james@digitalt3.com"}
+    {
+      "id": "priya.sharma",
+      "display_name": "Priya Sharma"
+    },
+    {
+      "id": "james.okafor",
+      "display_name": "James Okafor"
+    },
+    {
+      "id": "wei.chen",
+      "display_name": "Wei Chen"
+    },
+    {
+      "id": "fatima.hassan",
+      "display_name": "Fatima Hassan"
+    },
+    {
+      "id": "liam.oconnor",
+      "display_name": "Liam Oconnor"
+    },
+    {
+      "id": "sara.johansson",
+      "display_name": "Sara Johansson"
+    }
   ],
   "19:proj-beta@thread.tacv2": [
-    {"id": "diego.martinez", "display_name": "Diego Martinez", "email": "diego@digitalt3.com"}
+    {
+      "id": "james.okafor",
+      "display_name": "James Okafor"
+    },
+    {
+      "id": "wei.chen",
+      "display_name": "Wei Chen"
+    },
+    {
+      "id": "diego.martinez",
+      "display_name": "Diego Martinez"
+    },
+    {
+      "id": "amara.okonkwo",
+      "display_name": "Amara Okonkwo"
+    },
+    {
+      "id": "kenji.tanaka",
+      "display_name": "Kenji Tanaka"
+    },
+    {
+      "id": "elena.rossi",
+      "display_name": "Elena Rossi"
+    }
+  ],
+  "19:proj-gamma@thread.tacv2": [
+    {
+      "id": "noah.becker",
+      "display_name": "Noah Becker"
+    },
+    {
+      "id": "aisha.rahman",
+      "display_name": "Aisha Rahman"
+    },
+    {
+      "id": "wei.chen",
+      "display_name": "Wei Chen"
+    },
+    {
+      "id": "olivia.dupont",
+      "display_name": "Olivia Dupont"
+    },
+    {
+      "id": "mateo.silva",
+      "display_name": "Mateo Silva"
+    }
+  ],
+  "19:groupchat_9f2a1c@unq.gbl.spaces": [
+    {
+      "id": "priya.sharma",
+      "display_name": "Priya Sharma"
+    },
+    {
+      "id": "diego.martinez",
+      "display_name": "Diego Martinez"
+    },
+    {
+      "id": "noah.becker",
+      "display_name": "Noah Becker"
+    }
+  ],
+  "19:oneonone_7b3e44@unq.gbl.spaces": [
+    {
+      "id": "priya.sharma",
+      "display_name": "Priya Sharma"
+    },
+    {
+      "id": "james.okafor",
+      "display_name": "James Okafor"
+    }
   ]
 }
