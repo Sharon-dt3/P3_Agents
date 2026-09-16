@@ -23,6 +23,10 @@
     {
       "id": "sara.johansson",
       "display_name": "Sara Johansson"
+    },
+    {
+      "id": "ci-bot",
+      "display_name": "Ci-bot"
     }
   ],
   "19:proj-beta@thread.tacv2": [
@@ -49,6 +53,10 @@
     {
       "id": "elena.rossi",
       "display_name": "Elena Rossi"
+    },
+    {
+      "id": "sofia.almeida",
+      "display_name": "Sofia Almeida"
     }
   ],
   "19:proj-gamma@thread.tacv2": [
@@ -71,6 +79,10 @@
     {
       "id": "mateo.silva",
       "display_name": "Mateo Silva"
+    },
+    {
+      "id": "olivia.dupree",
+      "display_name": "Olivia Dupree"
     }
   ],
   "19:groupchat_9f2a1c@unq.gbl.spaces": [

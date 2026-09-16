@@ -30,6 +30,6 @@ channel_owner_id: "priya.sharma"
 
 exceptions:
   - member_id: "liam.oconnor"
-    reason: "Annual leave through Sep 20"
+    reason: "Annual leave through 2025-06-13"
 
 version: 1
