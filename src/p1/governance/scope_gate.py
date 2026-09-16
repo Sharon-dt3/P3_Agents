@@ -2,14 +2,14 @@
 Scope gate (CHN-04): the structural boundary that makes it impossible to
 read a non-allowlisted channel or any chat, rather than merely unlikely.
 
-Wraps a TeamsReader and refuses list_messages() for any channel_id that
-is not on the explicit allowlist, persisting a refusal record to the
-audit table before raising. list_replies() and get_permalink() take
-only a message_id -- by construction that message_id can only ever have
-come from a prior, already-gated list_messages() call, so there is no
-separate channel to check there. list_channels() is filtered down to
-allowlisted channels only, since it is enumeration, not a denied
-request.
+Wraps a TeamsReader and refuses list_messages()/list_channel_members()
+for any channel_id that is not on the explicit allowlist, persisting a
+refusal record to the audit table before raising. list_replies() and
+get_permalink() take only a message_id -- by construction that
+message_id can only ever have come from a prior, already-gated
+list_messages() call, so there is no separate channel to check there.
+list_channels() is filtered down to allowlisted channels only, since it
+is enumeration, not a denied request.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from collections.abc import Iterable
 from p1.adapters.teams_reader import (
     MessagePage,
     TeamsChannel,
+    TeamsMember,
     TeamsMessage,
     TeamsReader,
 )
@@ -57,6 +58,10 @@ class ScopedTeamsReader(TeamsReader):
 
     def list_channels(self) -> list[TeamsChannel]:
         return [c for c in self._reader.list_channels() if c.id in self._allowlist]
+
+    def list_channel_members(self, channel_id: str) -> list[TeamsMember]:
+        self._enforce(channel_id, "list_channel_members")
+        return self._reader.list_channel_members(channel_id)
 
     def list_messages(
         self,

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from p1.adapters.teams_reader import TeamsChannel, TeamsMessage
@@ -56,6 +58,17 @@ def test_list_messages_on_a_chat_id_raises_the_same_way(db_path):
         gate.list_messages("19:some-group-chat@unq.gbl.spaces")
 
 
+def test_list_channel_members_on_allowlisted_channel_succeeds(db_path):
+    gate = ScopedTeamsReader(_reader(), allowlisted_channel_ids=["allowed-1"], db_path=db_path)
+    assert gate.list_channel_members("allowed-1") == []
+
+
+def test_list_channel_members_on_non_allowlisted_channel_raises(db_path):
+    gate = ScopedTeamsReader(_reader(), allowlisted_channel_ids=["allowed-1"], db_path=db_path)
+    with pytest.raises(ScopeViolationError):
+        gate.list_channel_members("not-allowed-1")
+
+
 def test_refusal_is_recorded_in_the_audit_table(db_path):
     gate = ScopedTeamsReader(_reader(), allowlisted_channel_ids=["allowed-1"], db_path=db_path)
     with pytest.raises(ScopeViolationError):
@@ -75,7 +88,8 @@ def test_refusal_is_recorded_in_the_audit_table(db_path):
     assert action == "refuse_read"
     assert entity_type == "channel"
     assert entity_id == "not-allowed-1"
-    assert "list_messages" in details_json
+    details = json.loads(details_json)
+    assert details["operation"] == "list_messages"
 
 
 def test_list_replies_and_get_permalink_pass_through_without_a_channel_check(db_path):
