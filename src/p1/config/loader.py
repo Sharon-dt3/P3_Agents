@@ -85,6 +85,7 @@ class ChannelConfigStore:
                     "update_window_end": config.update_window_end.isoformat(),
                     "timezone": config.timezone,
                     "working_days": json.dumps(config.working_days),
+                    "non_working_dates": json.dumps([d.isoformat() for d in config.non_working_dates]),
                     "length_floor": config.length_floor,
                     "count_thread_replies": int(config.count_thread_replies),
                     "ignore_bots": int(config.ignore_bots),

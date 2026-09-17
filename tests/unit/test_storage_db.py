@@ -29,5 +29,5 @@ def test_run_migrations_is_idempotent(tmp_path):
     first_run = run_migrations(db_path)
     second_run = run_migrations(db_path)
 
-    assert first_run == ["0001_initial.sql", "0002_sync_state.sql"]
+    assert first_run == ["0001_initial.sql", "0002_sync_state.sql", "0003_channel_config_non_working_dates.sql"]
     assert second_run == []

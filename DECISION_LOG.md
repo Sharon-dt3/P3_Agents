@@ -85,3 +85,58 @@ Decision: Each script in scripts/ inserts src/ onto sys.path at the top before i
 Context/reasoning: `uv run python scripts/seed.py` failed with ModuleNotFoundError for p1 even though pip list shows it installed -- traced to unreliable .pth processing in this environment (see the earlier pytest pythonpath fix). This keeps scripts working regardless of that, and regardless of the shell's PYTHONPATH state.
 
 Alternatives considered: Fixing the editable install directly (uv sync --reinstall-package p1) -- already tried, did not resolve it; not worth further time given a working, portable alternative exists.
+
+## 2026-09-17 -- CHN-07: sheet 06's 15 planted difficulties are authoritative, not "twenty"
+
+Decision: Rebuild CHN-07's planted-difficulty fixtures to match source sheet
+06 (Seed Data and Planted Difficulties) exactly -- 15 named P1 categories --
+rather than the 20 categories originally built.
+
+Context/reasoning: Sheet 06 is the only source sheet that itemizes the P1
+planted difficulties in enough detail to build and grade against. Three
+other sheets (the sheet guide, the schedule, and the eval plan) reference
+"twenty planted difficulties" with no supporting list -- an unreconciled
+approximation, not a second specification. The original CHN-07 build had
+20 categories that did not cleanly correspond to sheet 06's 15: 4 matched
+correctly, 2 needed timing verification, 4 were built as the wrong test
+(exact-boundary post instead of one-minute-late; a 3-person thread instead
+of one member's reply-only update; emoji-text messages instead of true
+silence for a reactions-only member; and the departed-tenant-member case
+had its roster/membership direction backwards), 4 were missing entirely
+(posting on behalf of another, an @mention that's actually a question, a
+labelled channel-silent-day, and a configured non-working day distinct
+from a calendar weekend), and 3 were extras not in sheet 06 at all
+(duplicate double-post, cross-channel identity, mismatched timezone --
+the last of these isn't a "difficulty" at all, since the timezone
+difference is already normal CHN-06 config diversity).
+
+Actions taken:
+- Rewrote scripts/generate_seed_fixtures.py's planted-difficulty section
+  to implement exactly sheet 06's 15 categories (20 label rows total,
+  since bot_post/edited_message/deleted_message each carry 2-3 instances
+  so the eval harness's precision/recall numbers are meaningful rather
+  than a coin flip on a single example).
+- Added SKIP_ORGANIC_AUTHOR_ON_DAY to the generator so the deleted-
+  message, thread-reply-only, and late-post cases are deterministically
+  guaranteed to be each subject's sole activity that day, rather than
+  relying on the random seed to avoid a collision.
+- Added a new ChannelConfig field, non_working_dates (list[date], default
+  empty), plus migration 0003_channel_config_non_working_dates.sql and
+  the matching loader.py sync, to represent a one-off configured holiday
+  on an otherwise-working weekday -- something working_days (a recurring
+  Mon-Fri pattern) cannot express on its own. Applied to proj-alpha.yaml
+  (2025-06-13).
+- Corrected the departed-tenant-member case's direction: sofia.almeida is
+  now on config/channels/proj-beta.yaml's roster (still an expected
+  contributor per the system of record) but deliberately absent from
+  list_channel_members, rather than the reverse.
+- Dropped the 3 out-of-spec categories entirely rather than keeping them
+  as an unlabelled "bonus" tier, to avoid recreating the same "does this
+  count or not" ambiguity this rework exists to resolve.
+
+Alternatives considered: Keeping 20 and treating the extra 5 as
+legitimately specified -- rejected, since no sheet actually specifies what
+those 5 would be, and inventing them ourselves would just be a different
+unbacked guess. Keeping the 3 out-of-spec categories as clearly-marked
+"bonus" cases -- rejected in favour of a clean 15-for-15 match against the
+one document that actually specifies this.

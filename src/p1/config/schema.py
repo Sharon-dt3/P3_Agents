@@ -8,7 +8,7 @@ a bag of literals scattered through the codebase.
 
 from __future__ import annotations
 
-from datetime import time
+from datetime import date, time
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -30,6 +30,11 @@ class ChannelConfig(BaseModel):
     update_window_end: time
     timezone: str
     working_days: list[str] = Field(min_length=1)
+    non_working_dates: list[date] = Field(default_factory=list)
+    # One-off calendar exceptions on an otherwise-working weekday (e.g. a
+    # holiday) -- distinct from `working_days`, which is a recurring
+    # weekday pattern. A date here is never counted as a missed-update
+    # day for anyone on the roster.
 
     length_floor: int = 10
     count_thread_replies: bool = True

@@ -14,6 +14,7 @@ update_window_start: "09:00:00"
 update_window_end: "11:00:00"
 timezone: "Asia/Colombo"
 working_days: ["Mon", "Tue", "Wed", "Thu", "Fri"]
+non_working_dates: ["2025-06-13"]
 
 length_floor: 10
 count_thread_replies: true

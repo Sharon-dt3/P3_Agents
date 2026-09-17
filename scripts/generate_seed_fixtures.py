@@ -9,15 +9,31 @@ scripts/seed.py loads them, it does not regenerate them.
 Two layers of content:
   1. Organic messages: randomly generated update/question/blocker/chatter
      traffic across 3 channels + 2 chats, 10 working days. A handful of
-     roster members have a fixed behavioural override (on-leave, always
-     chatter, emoji-only) that shapes the organic stream itself, because
-     those cases have to hold for the *entire* window, not just one message.
-  2. Planted difficulties (CHN-07): exactly 20 hand-authored cases, each
-     with a fixed, human-readable message id so seed/fixtures/labels.csv
-     can reference them by id forever, independent of the random stream.
-     This script is the single source of truth for both the fixtures and
-     their hand labels -- they cannot drift apart because the same loop
-     that creates a planted message also appends its label row.
+     roster members have a fixed behavioural override (on-leave, chatter-
+     only, reaction-only) that shapes the organic stream itself, because
+     those cases have to hold for the *entire* window, not just one
+     message. SKIP_ORGANIC_AUTHOR_ON_DAY additionally excludes specific
+     (channel, date, author) combinations from the random draw wherever a
+     planted difficulty below depends on being that member's *only*
+     activity that day -- decided up front, not discovered by luck of the
+     seed.
+  2. Planted difficulties (CHN-07): exactly the 15 named cases specified
+     in source sheet 06 (Seed Data and Planted Difficulties) -- no more,
+     no fewer. Each has a fixed, human-readable message id so
+     seed/fixtures/labels.csv can reference them by id forever,
+     independent of the random stream. This script is the single source
+     of truth for both the fixtures and their hand labels -- they cannot
+     drift apart because the same loop that creates a planted message
+     also appends its label row.
+
+     Three earlier categories (duplicate double-post, cross-channel
+     identity, mismatched timezone) were dropped in this rework: none of
+     the three appears in sheet 06's list, and the first two are already
+     covered structurally by ordinary CHN-06 base requirements (a shared
+     roster member across channels; nothing here specifically calls for
+     a double-post case). Keeping them alongside the real 15 only
+     invited the same "does this count or not" confusion this rework
+     exists to resolve.
 """
 import csv
 import json
@@ -43,7 +59,11 @@ CHANNELS = [
 ]
 
 # Config-side roster (system of record, CHN-02) -- what each channel's
-# non-responder arithmetic is computed over.
+# non-responder arithmetic is computed over. This must mirror
+# config/channels/*.yaml exactly, with one deliberate exception: BETA's
+# YAML roster also includes "sofia.almeida" (DIFF-DEPART-01, see below),
+# who is intentionally left OUT of this dict so she never enters the
+# organic author pool or the Teams-membership list built from it.
 ROSTERS = {
     ALPHA: [
         "priya.sharma", "james.okafor", "wei.chen",
@@ -60,17 +80,20 @@ ROSTERS = {
 }
 
 # Teams-side membership (what list_channel_members returns) -- deliberately
-# NOT identical to the config roster above for two members:
-#   - "sofia.almeida" is a Teams member of proj-beta (she posted there
-#     before leaving the company) but was already dropped from the config
-#     roster, which is current. Proves participation math must be computed
-#     over the roster, never over "everyone who ever posted."
+# NOT identical to the config roster for two reasons:
 #   - "ci-bot" is a Teams member of proj-alpha (bots show up as channel
 #     members in Graph) but was never on the roster -- bots are never
 #     asked for an update.
+#   - "sofia.almeida" is on proj-beta's *config* roster (config/channels/
+#     proj-beta.yaml) -- she is still an expected contributor as far as
+#     the system of record is concerned -- but is deliberately absent
+#     from both this dict and ROSTERS[BETA] above, so she never appears
+#     in list_channel_members. That is DIFF-DEPART-01: a roster member
+#     who has since left the tenant. She has real posting history (see
+#     the plant() calls below) from before she left.
 TEAMS_MEMBERSHIP_EXTRA = {
     ALPHA: ["ci-bot"],
-    BETA: ["sofia.almeida"],
+    BETA: [],
     GAMMA: [],
 }
 
@@ -81,15 +104,35 @@ CHAT_ROSTERS = {
 
 CHANNEL_TZ = {
     ALPHA: ZoneInfo("Asia/Colombo"),
-    BETA: ZoneInfo("America/New_York"),   # DIFF-TZ-01: mismatched vs. alpha/gamma
+    BETA: ZoneInfo("America/New_York"),
     GAMMA: ZoneInfo("Asia/Colombo"),
 }
 
+UPDATE_WINDOW = {
+    ALPHA: (time(9, 0), time(11, 0)),
+    BETA: (time(8, 0), time(10, 0)),
+    GAMMA: (time(9, 0), time(11, 0)),
+}
+
 # Members with a fixed behavioural override for the whole window.
-ON_LEAVE = {ALPHA: "liam.oconnor"}          # DIFF-LEAVE-01
-CHATTER_ONLY = {ALPHA: "fatima.hassan"}     # DIFF-CHATTER-01
-EMOJI_ONLY = {GAMMA: "aisha.rahman"}        # DIFF-EMOJI-01
-EMOJI_BODIES = ["\U0001F44D", "\U0001F642", "\U0001F389"]  # thumbs up, smile, party -- all well under length_floor
+ON_LEAVE = {ALPHA: "liam.oconnor"}          # DIFF-LEAVE-01 (state c: excluded)
+CHATTER_ONLY = {ALPHA: "fatima.hassan"}     # DIFF-CHATTER-01 (state b: posted, no update)
+REACTION_ONLY = {GAMMA: "aisha.rahman"}     # DIFF-REACTION-01 (state a: no message at all)
+
+# Specific (channel_id, date, member_id) combinations excluded from the
+# random organic draw, decided up front, because a planted difficulty
+# below depends on that exact combination being the member's *only*
+# activity that day. Without this, the random stream could -- by luck of
+# the seed -- hand the same (channel, day, author) an extra organic
+# message and quietly invalidate the "only update that day" premise of
+# the deleted-message, thread-reply-only and late-post cases.
+SKIP_ORGANIC_AUTHOR_ON_DAY = {
+    (ALPHA, date(2025, 6, 3), "sara.johansson"),    # DIFF-DEL-01
+    (ALPHA, date(2025, 6, 9), "wei.chen"),           # DIFF-DEL-02
+    (GAMMA, date(2025, 6, 12), "mateo.silva"),       # DIFF-DEL-03
+    (ALPHA, date(2025, 6, 12), "james.okafor"),      # DIFF-THREAD-01 (reply-only)
+    (BETA, date(2025, 6, 10), "amara.okonkwo"),      # DIFF-LATE-01
+}
 
 
 def display_name(member_id: str) -> str:
@@ -106,7 +149,12 @@ WORKING_DAYS = [
 ]
 
 SILENT_CHANNEL = BETA
-SILENT_DAY = date(2025, 6, 11)   # DIFF-SILENT-01: whole-channel silent day (pre-existing)
+SILENT_DAY = date(2025, 6, 11)   # DIFF-SILENT-01: whole-channel silent day
+
+# DIFF-NONWORKING-01: a weekday that is NOT a calendar weekend but is
+# excluded via config/channels/proj-alpha.yaml's non_working_dates. Must
+# mirror that file exactly.
+NON_WORKING_DATES = {ALPHA: [date(2025, 6, 13)]}
 
 FEATURES = ["the auth flow", "the export job", "the search index",
             "the notification service", "the billing sync",
@@ -187,33 +235,38 @@ def gen_messages_for_channel(channel_id, roster, days, msgs_per_day_range=(4, 10
     tz = CHANNEL_TZ.get(channel_id, ZoneInfo("UTC"))
     on_leave = ON_LEAVE.get(channel_id)
     chatter_only = CHATTER_ONLY.get(channel_id)
-    emoji_only = EMOJI_ONLY.get(channel_id)
-    author_pool = [m for m in roster if m != on_leave]
+    reaction_only = REACTION_ONLY.get(channel_id)
+    excluded_always = {m for m in (on_leave, reaction_only) if m}
+    non_working = set(NON_WORKING_DATES.get(channel_id, []))
     out = []
     for day in days:
         if channel_id == SILENT_CHANNEL and day == SILENT_DAY:
             continue  # deliberate channel-silent day (DIFF-SILENT-01)
+        if day in non_working:
+            continue  # configured non-working day (DIFF-NONWORKING-01)
+        skip_today = {
+            member for (ch, d, member) in SKIP_ORGANIC_AUTHOR_ON_DAY
+            if ch == channel_id and d == day
+        }
+        author_pool = [m for m in roster if m not in excluded_always and m not in skip_today]
+        if not author_pool:
+            continue
         n = random.randint(*msgs_per_day_range)
         for _ in range(n):
             author = random.choice(author_pool)
             hour = random.randint(8, 16)
             minute = random.randint(0, 59)
             posted = datetime.combine(day, time(hour, minute), tzinfo=tz)
-            if author == chatter_only:
-                kind = "chatter"
-            elif author == emoji_only:
-                kind = "emoji"
-            else:
-                kind = random.choices(
-                    ["update", "question", "blocker", "chatter"],
-                    weights=[0.55, 0.15, 0.10, 0.20],
-                )[0]
+            kind = "chatter" if author == chatter_only else random.choices(
+                ["update", "question", "blocker", "chatter"],
+                weights=[0.55, 0.15, 0.10, 0.20],
+            )[0]
             msg_id = new_id(channel_id.split(":")[1].split("@")[0])
-            body = random.choice(EMOJI_BODIES) if kind == "emoji" else random_body(kind)
-            msg = base_message(msg_id, channel_id, author, posted, body)
+            msg = base_message(msg_id, channel_id, author, posted, random_body(kind))
             out.append(msg)
             if random.random() < 0.25:
-                replier = random.choice(author_pool)
+                reply_pool = [m for m in author_pool]
+                replier = random.choice(reply_pool)
                 reply_posted = posted + timedelta(minutes=random.randint(5, 90))
                 reply_id = new_id(channel_id.split(":")[1].split("@")[0])
                 out.append(base_message(
@@ -232,8 +285,12 @@ messages_out = {
 }
 
 # ---------------------------------------------------------------------------
-# CHN-07: 20 planted difficulties, fixed ids, appended after organic
-# generation. LABELS accumulates the ground-truth row for each one.
+# CHN-07: the 15 planted difficulties named in source sheet 06, fixed ids,
+# appended after organic generation. LABELS accumulates the ground-truth
+# row for each one. A category may have more than one instance (bot post,
+# edited message, deleted message) where a single example would make the
+# eval harness's precision/recall numbers meaningless; the assertion below
+# checks the 15 DISTINCT categories, not the row count.
 # ---------------------------------------------------------------------------
 LABELS = []
 
@@ -244,14 +301,14 @@ def plant(channel_id, msg_id, author_id, posted, body, **overrides):
     return msg
 
 
-def label(difficulty_id, category, channel_id, member_id, message_ids, date, description, expected_ground_truth):
+def label(difficulty_id, category, channel_id, member_id, message_ids, day, description, expected_ground_truth):
     LABELS.append({
         "difficulty_id": difficulty_id,
         "category": category,
-        "channel_id": channel_id,
+        "channel_id": channel_id or "",
         "member_id": member_id or "",
         "message_ids": ";".join(message_ids) if message_ids else "",
-        "date": date,
+        "date": day,
         "description": description,
         "expected_ground_truth": expected_ground_truth,
     })
@@ -261,35 +318,38 @@ TZ_ALPHA = CHANNEL_TZ[ALPHA]
 TZ_BETA = CHANNEL_TZ[BETA]
 TZ_GAMMA = CHANNEL_TZ[GAMMA]
 
-# DIFF-EDIT-01..04: edited messages. posted_at must never change; edited_at
-# is set; body reflects the post-edit text.
+# --- 1. Edited message, attributed to original post time (sheet 06) ------
+# All three edits happen AFTER the channel's update window has closed for
+# that day; posted_at (the ORIGINAL post, on time) must remain the record
+# of when the update happened, never overwritten by edited_at.
 edit_specs = [
-    (ALPHA, "priya.sharma", datetime(2025, 6, 2, 9, 30, tzinfo=TZ_ALPHA), 12,
+    (ALPHA, "priya.sharma", datetime(2025, 6, 2, 9, 30, tzinfo=TZ_ALPHA), 110,
      "Finished the auth flow, running the tests now.",
      "Finished the auth flow, running the test suite now -- fixed a typo."),
-    (ALPHA, "james.okafor", datetime(2025, 6, 4, 10, 5, tzinfo=TZ_ALPHA), 40,
+    (ALPHA, "james.okafor", datetime(2025, 6, 4, 10, 50, tzinfo=TZ_ALPHA), 20,
      "Deployed the export job to staging.",
      "Deployed the export job to staging -- added the missing rollback step."),
-    (BETA, "diego.martinez", datetime(2025, 6, 5, 9, 0, tzinfo=TZ_BETA), 8,
+    (BETA, "diego.martinez", datetime(2025, 6, 5, 8, 10, tzinfo=TZ_BETA), 125,
      "Blocked on the billing sync, waiting on IT.",
      "Blocked on the billing sync -- waiting on the API credentials from IT."),
-    (BETA, "amara.okonkwo", datetime(2025, 6, 10, 8, 45, tzinfo=TZ_BETA), 20,
-     "Merged the PR for the retry queue.",
-     "Merged the PR for the retry queue, moving on to the caching layer."),
 ]
 for i, (ch, author, posted, delay_min, orig_body, new_body) in enumerate(edit_specs, start=1):
     msg_id = f"diff-edit-{i:02d}"
-    plant(ch, msg_id, author, posted, new_body,
-          edited_at=(posted + timedelta(minutes=delay_min)).isoformat())
+    window_end = UPDATE_WINDOW[ch][1]
+    edited_at = posted + timedelta(minutes=delay_min)
+    assert edited_at.time() > window_end, f"{msg_id}: edit must land after the update window closes"
+    plant(ch, msg_id, author, posted, new_body, edited_at=edited_at.isoformat())
     label(f"DIFF-EDIT-{i:02d}", "edited_message", ch, author, [msg_id],
           posted.date().isoformat(),
-          f"Message edited {delay_min} min after posting; original text was: {orig_body!r}",
-          "posted_at must remain the original post time; edit must not be treated as a second update")
+          f"Posted on time at {posted.time()}; edited {delay_min} min later at {edited_at.time()} "
+          f"({window_end} window close already passed); original text was: {orig_body!r}",
+          "posted_at must remain the original, on-time post time; a post-window edit must not "
+          "invalidate an on-time update or be treated as a second, late one")
 
-# DIFF-DEL-01..03: deleted messages. Real content is gone (Teams-style
-# tombstone); the fact that *something* was posted must still be knowable
-# from is_deleted/deleted_at, but the deleted body must never be used as
-# evidence of an update.
+# --- 2. Deleted message that was a member's only update that day ---------
+# SKIP_ORGANIC_AUTHOR_ON_DAY guarantees each of these is genuinely the
+# member's only message that day, so its deletion leaves them with zero
+# visible activity for the day.
 del_specs = [
     (ALPHA, "sara.johansson", datetime(2025, 6, 3, 9, 15, tzinfo=TZ_ALPHA),
      "Started work on the search index today, will have an update tomorrow."),
@@ -300,15 +360,17 @@ del_specs = [
 ]
 for i, (ch, author, posted, orig_body) in enumerate(del_specs, start=1):
     msg_id = f"diff-del-{i:02d}"
+    assert (ch, posted.date(), author) in SKIP_ORGANIC_AUTHOR_ON_DAY
     plant(ch, msg_id, author, posted, "",
           deleted_at=(posted + timedelta(minutes=25)).isoformat(), is_deleted=True)
     label(f"DIFF-DEL-{i:02d}", "deleted_message", ch, author, [msg_id],
           posted.date().isoformat(),
-          f"Message deleted ~25 min after posting; original text was: {orig_body!r}",
-          "must never count as an update for participation; deletion itself is not evidence of anything")
+          f"Message deleted ~25 min after posting; this was the member's only message that day; "
+          f"original text was: {orig_body!r}",
+          "must never count as an update for participation; the day reverts to a genuine "
+          "no-message day for this member, not a fabricated one")
 
-# DIFF-BOT-01..02: bot posts. ci-bot is a Teams member of proj-alpha but
-# never on the config roster.
+# --- 3. Bot / connector post -----------------------------------------------
 bot_specs = [
     (datetime(2025, 6, 4, 7, 0, tzinfo=TZ_ALPHA), "Nightly build for proj-alpha: PASSED (142/142 tests)."),
     (datetime(2025, 6, 11, 7, 0, tzinfo=TZ_ALPHA), "Nightly build for proj-alpha: FAILED -- 2 tests, see CI run #4821."),
@@ -321,17 +383,19 @@ for i, (posted, body) in enumerate(bot_specs, start=1):
           "Automated CI bot post; ci-bot is a Teams channel member but is not on the config roster",
           "ignore_bots=true for proj-alpha: must never be attributed to a person or counted as anyone's update")
 
-# DIFF-SYS-01: system-generated event message, no human author.
+# --- 4. System message: a member joined the channel -----------------------
 sys_posted = datetime(2025, 6, 9, 8, 0, tzinfo=TZ_BETA)
 plant(BETA, "diff-sys-01", None, sys_posted, "Kenji Tanaka was added to the channel.", is_system=True)
 label("DIFF-SYS-01", "system_post", BETA, None, ["diff-sys-01"], sys_posted.date().isoformat(),
-      "Teams-generated membership-change notice; author_id is null",
+      "Teams-generated 'member joined the channel' notice; author_id is null",
       "must never be attributed to a person or counted as anyone's update")
 
-# DIFF-DEPART-01: a Teams member with real posting history who was already
-# removed from the config roster (she left the company). 3 messages across
-# the first 3 working days, then nothing -- her absence for the rest of the
-# window must never be flagged, because she isn't on the roster at all.
+# --- 5. Roster member who has since left the tenant (direction corrected) -
+# sofia.almeida is on config/channels/proj-beta.yaml's roster (still an
+# expected contributor as far as the system of record goes) but is
+# deliberately absent from ROSTERS[BETA] and TEAMS_MEMBERSHIP_EXTRA above,
+# so list_channel_members never returns her. She has real posting history
+# from before she left, then nothing.
 depart_days = WORKING_DAYS[:3]
 depart_msg_ids = []
 for i, day in enumerate(depart_days, start=1):
@@ -340,14 +404,17 @@ for i, day in enumerate(depart_days, start=1):
     plant(BETA, msg_id, "sofia.almeida", posted,
           random.choice(UPDATE_TEMPLATES).format(feature=random.choice(FEATURES)))
     depart_msg_ids.append(msg_id)
-label("DIFF-DEPART-01", "departed_member", BETA, "sofia.almeida", depart_msg_ids,
+label("DIFF-DEPART-01", "departed_tenant_member", BETA, "sofia.almeida", depart_msg_ids,
       depart_days[0].isoformat(),
-      "sofia.almeida posted through 2025-06-04, then left; still returned by list_channel_members "
-      "but already removed from channel_config.roster for proj-beta",
-      "participation must be computed over the config roster only -- she must never appear as a "
-      "non-responder for the days after she left, because she is not on the roster")
+      "sofia.almeida is on channel_config.roster for proj-beta (still expected) but is no longer "
+      "returned by list_channel_members -- she left the tenant. She posted through "
+      f"{depart_days[-1].isoformat()}, then nothing for the rest of the window.",
+      "participation must be computed over the config roster, not over live Graph membership -- she "
+      "must still be tracked rather than silently dropped just because Graph no longer lists her as "
+      "a member; her post-departure silence is evaluated the same as any roster member's absence, "
+      "since tenant-departure detection is not itself a built capability yet")
 
-# DIFF-NAME-01: similar-name collision within one roster/channel.
+# --- 6. Two members with very similar display names ------------------------
 name_posted = datetime(2025, 6, 10, 9, 30, tzinfo=TZ_GAMMA)
 name_msg_id = "diff-name-01"
 plant(GAMMA, name_msg_id, "olivia.dupree", name_posted,
@@ -357,86 +424,135 @@ label("DIFF-NAME-01", "similar_names", GAMMA, "olivia.dupree", [name_msg_id],
       "proj-gamma roster has both olivia.dupont and olivia.dupree -- same first name, one letter apart",
       "must be tracked as two distinct people keyed by member_id, never merged or fuzzy-matched by display name")
 
-# DIFF-BOUND-01: message posted exactly at update_window_end (proj-alpha:
-# 11:00:00). Whether the window boundary is inclusive is a CHN-08 design
-# decision not yet made -- this case exists to force that decision to be
-# explicit rather than accidental.
-bound_posted = datetime(2025, 6, 6, 11, 0, 0, tzinfo=TZ_ALPHA)
-bound_msg_id = "diff-bound-01"
-plant(ALPHA, bound_msg_id, "james.okafor", bound_posted,
-      "Wrapped up code review on the onboarding wizard, no major issues found.")
-label("DIFF-BOUND-01", "window_boundary", ALPHA, "james.okafor", [bound_msg_id],
-      bound_posted.date().isoformat(),
-      "Posted at exactly update_window_end (11:00:00 Asia/Colombo) for proj-alpha",
-      "NOT YET DECIDED -- flag for CHN-08: whether the update window is inclusive or exclusive of its end instant")
-
-# DIFF-DUP-01: accidental rapid double-post of near-identical text.
-dup_posted = datetime(2025, 6, 5, 8, 20, tzinfo=TZ_BETA)
-dup_ids = ["diff-dup-01a", "diff-dup-01b"]
-plant(BETA, dup_ids[0], "james.okafor", dup_posted,
-      "Deployed the notification service to staging, looks stable so far.")
-plant(BETA, dup_ids[1], "james.okafor", dup_posted + timedelta(seconds=30),
-      "Deployed the notification service to staging, looks stable so far.")
-label("DIFF-DUP-01", "duplicate_post", BETA, "james.okafor", dup_ids,
-      dup_posted.date().isoformat(),
-      "Same author posts near-identical text twice, 30 seconds apart (accidental double-send)",
-      "must count as one update for participation purposes, not two")
-
-# DIFF-THREAD-01: a deep reply chain, 3 replies from 3 different members,
-# in proj-alpha where count_thread_replies=true (contrast with proj-beta,
-# where it's false).
+# --- 7. A member whose update is a thread reply, not a root message -------
+# james.okafor's ONLY activity on 2025-06-12 is this reply (guaranteed by
+# SKIP_ORGANIC_AUTHOR_ON_DAY); it must still count as his update for the
+# day since count_thread_replies=true for proj-alpha.
 thread_root_posted = datetime(2025, 6, 12, 9, 45, tzinfo=TZ_ALPHA)
 thread_root_id = "diff-thread-01-root"
 plant(ALPHA, thread_root_id, "priya.sharma", thread_root_posted,
       "Should the reporting dashboard handle the null case, or is that out of scope?")
-thread_reply_ids = []
-for i, (author, body, delay) in enumerate([
-    ("james.okafor", "I'd say out of scope for v1, worth a follow-up ticket though.", 10),
-    ("wei.chen", "Agreed -- I'll file the ticket.", 18),
-    ("fatima.hassan", "Thanks!", 25),
-], start=1):
-    reply_id = f"diff-thread-01-reply-{i}"
-    plant(ALPHA, reply_id, author, thread_root_posted + timedelta(minutes=delay), body,
-          thread_root_id=thread_root_id)
-    thread_reply_ids.append(reply_id)
-label("DIFF-THREAD-01", "deep_thread", ALPHA, "priya.sharma", [thread_root_id] + thread_reply_ids,
-      thread_root_posted.date().isoformat(),
-      "Root question with 3 sequential replies from 3 different roster members",
-      "count_thread_replies=true for proj-alpha: all 3 repliers get participation credit for this thread")
+thread_reply_id = "diff-thread-01-reply-1"
+thread_reply_posted = thread_root_posted + timedelta(minutes=10)
+plant(ALPHA, thread_reply_id, "james.okafor", thread_reply_posted,
+      "Out of scope for v1 -- I'll file a follow-up ticket and link it here.",
+      thread_root_id=thread_root_id)
+label("DIFF-THREAD-01", "thread_reply_only_update", ALPHA, "james.okafor",
+      [thread_root_id, thread_reply_id], thread_root_posted.date().isoformat(),
+      "james.okafor's only message on 2025-06-12 is a reply to priya.sharma's root question, not a "
+      "root message of his own",
+      "count_thread_replies=true for proj-alpha: the reply alone must count as his update for the day")
 
-# Pre-existing / structural difficulties that need no extra planted
-# messages of their own -- documented here so labels.csv is the complete,
-# authoritative list of all 20.
+# --- 8. A member who posts one minute after the window closes -------------
+# amara.okonkwo's ONLY activity on 2025-06-10 is this post (guaranteed by
+# SKIP_ORGANIC_AUTHOR_ON_DAY), one minute after proj-beta's window closes.
+late_posted = datetime(2025, 6, 10, 10, 1, tzinfo=TZ_BETA)
+late_msg_id = "diff-late-01"
+plant(BETA, late_msg_id, "amara.okonkwo", late_posted,
+      "Merged the PR for the retry queue, moving on to the caching layer.")
+label("DIFF-LATE-01", "late_post_after_window", BETA, "amara.okonkwo", [late_msg_id],
+      late_posted.date().isoformat(),
+      "amara.okonkwo's only message on 2025-06-10, posted at 10:01 America/New_York -- one minute "
+      "after proj-beta's update_window_end (10:00:00)",
+      "must not satisfy the day's update requirement even though the content would otherwise "
+      "qualify -- the window close is a hard boundary, not a suggestion")
+
+# --- 9. A member posting on behalf of another ------------------------------
+onbehalf_posted = datetime(2025, 6, 3, 10, 15, tzinfo=TZ_ALPHA)
+onbehalf_msg_id = "diff-onbehalf-01"
+plant(ALPHA, onbehalf_msg_id, "james.okafor", onbehalf_posted,
+      "Posting for Priya -- she's blocked on the migration and asked me to update the channel.")
+label("DIFF-ONBEHALF-01", "posting_on_behalf_of_another", ALPHA, "james.okafor", [onbehalf_msg_id],
+      onbehalf_posted.date().isoformat(),
+      "james.okafor posts an update on priya.sharma's behalf; the message text names her, but he "
+      "is the author",
+      "must be attributed to and counted as james.okafor's update; priya.sharma must never be "
+      "credited for a message she did not post, however the text reads")
+
+# --- 10. An @mention that reads like an assignment but is actually a ------
+#         question
+mention_posted = datetime(2025, 6, 10, 10, 0, tzinfo=TZ_ALPHA)
+mention_msg_id = "diff-mention-01"
+plant(ALPHA, mention_msg_id, "sara.johansson", mention_posted,
+      "@james.okafor should this run before the deploy, or after -- trying to get the order right.")
+label("DIFF-MENTION-01", "ambiguous_mention_as_question", ALPHA, "sara.johansson", [mention_msg_id],
+      mention_posted.date().isoformat(),
+      "sara.johansson @-mentions james.okafor in a message that reads like it could be assigning "
+      "him a task, but is grammatically a question",
+      "must be classified as a question raised by sara.johansson, not as a task assignment to "
+      "james.okafor")
+
+# --- 11. A day with no messages at all in one channel ----------------------
+# Pre-existing structural mechanic (SILENT_CHANNEL / SILENT_DAY above),
+# documented here so labels.csv is the complete, authoritative list of
+# all 15 categories.
+label("DIFF-SILENT-01", "channel_silent_day", BETA, None, [],
+      SILENT_DAY.isoformat(),
+      "proj-beta has zero messages -- organic or planted -- on 2025-06-11, an otherwise ordinary "
+      "working day",
+      "must be reported as an honest empty day for every roster member, never fabricated or silently "
+      "skipped")
+
+# --- 12. A weekend and one configured non-working day ----------------------
+# The weekend (2025-06-07/08) is structural: WORKING_DAYS simply never
+# includes those dates for any channel. This label covers the second,
+# distinct half of the sheet-06 case: a weekday that config explicitly
+# excludes via non_working_dates, which working_days (a recurring Mon-Fri
+# pattern) cannot express on its own.
+non_working_day = NON_WORKING_DATES[ALPHA][0]
+label("DIFF-NONWORKING-01", "configured_non_working_day", ALPHA, None, [],
+      non_working_day.isoformat(),
+      f"{non_working_day.isoformat()} is a Friday (not a calendar weekend) but is listed in "
+      "config/channels/proj-alpha.yaml's non_working_dates",
+      "must never be counted as a missed-update day for any proj-alpha roster member, distinctly "
+      "from the ordinary weekend that brackets it")
+
+# --- 13. A member who posts only reactions and emoji -- counts as no ------
+#         update
+# Teams reactions are a separate, unread Graph API -- invisible to this
+# system entirely. The only honest representable form of "reacts a lot,
+# never posts a real update" is a member who generates zero messages for
+# the whole window, exactly like ON_LEAVE -- with one deliberate
+# difference: she is NOT on the exceptions list, so (once built) the
+# participation ledger must report her as a genuine non-responder, not as
+# excluded. This is the contrast that makes the case worth planting.
+label("DIFF-REACTION-01", "reaction_only_member", GAMMA, "aisha.rahman", [],
+      "2025-06-02..2025-06-13",
+      "aisha.rahman generates zero messages for the entire seeded window (in real Teams she is "
+      "assumed to be reacting to others' messages, which Graph does not expose to this system)",
+      "must be reported as a genuine non-responder for every day in the window -- unlike "
+      "liam.oconnor (DIFF-LEAVE-01), she is not on the exceptions list, so her silence must never "
+      "be excused")
+
+# --- 14. A member who posts chatter every day but never an update --------
+label("DIFF-CHATTER-01", "chatter_only_member", ALPHA, "fatima.hassan", [],
+      "2025-06-02..2025-06-13",
+      "Every organically generated message from fatima.hassan is chatter-kind (e.g. 'Thanks!', "
+      "'Sounds good.'), never an update/question/blocker",
+      "on days she posts: posted_no_update, not no_message and not credited as a real update")
+
+# --- 15. A member on the exceptions list for leave -------------------------
 label("DIFF-LEAVE-01", "on_leave_member", ALPHA, "liam.oconnor", [],
       "2025-06-02..2025-06-13",
       "liam.oconnor is on channel_config.exceptions for proj-alpha (annual leave) and organically "
       "generates zero messages for the entire seeded window",
       "must appear as excluded, never as a non-responder, and must never be nudged under any path (R2)")
 
-label("DIFF-CHATTER-01", "chatter_only_member", ALPHA, "fatima.hassan", [],
-      "2025-06-02..2025-06-13",
-      "Every organically generated message from fatima.hassan is chatter-kind (e.g. 'Thanks!', 'Sounds good.'), never an update/question/blocker",
-      "on days she posts: posted_no_update, not no_message and not credited as a real update")
-
-first_emoji_ids = [m["id"] for m in messages_out[GAMMA] if m["author_id"] == "aisha.rahman" and m["body"] in EMOJI_BODIES]
-label("DIFF-EMOJI-01", "emoji_only_member", GAMMA, "aisha.rahman", first_emoji_ids,
-      "2025-06-02..2025-06-13",
-      "Every organically generated message from aisha.rahman is a single emoji, below proj-gamma's length_floor "
-      "(reactions themselves are invisible to this system -- Graph reactions are a separate, unread API -- so an "
-      "emoji-only chat message is the closest representable analogue)",
-      "posted_no_update on days she posts (fails length_floor); must not be conflated with no_message")
-
-label("DIFF-TZ-01", "mismatched_timezone", BETA, None, [],
-      "n/a",
-      "proj-beta's update window (08:00-10:00) is America/New_York while proj-alpha and proj-gamma are Asia/Colombo",
-      "window membership must be computed in each channel's own configured timezone, never a global one")
-
-label("DIFF-XCHAN-01", "cross_channel_identity", None, "wei.chen", [],
-      "n/a",
-      "wei.chen is on the roster of all three channels (proj-alpha, proj-beta, proj-gamma) with independent posting history in each",
-      "participation must be keyed by (channel_id, member_id), never by member_id alone")
-
-assert len(LABELS) == 20, f"expected exactly 20 planted difficulties, got {len(LABELS)}"
+EXPECTED_CATEGORIES = {
+    "edited_message", "deleted_message", "bot_post", "system_post",
+    "departed_tenant_member", "similar_names", "thread_reply_only_update",
+    "late_post_after_window", "posting_on_behalf_of_another",
+    "ambiguous_mention_as_question", "channel_silent_day",
+    "configured_non_working_day", "reaction_only_member",
+    "chatter_only_member", "on_leave_member",
+}
+actual_categories = {row["category"] for row in LABELS}
+assert actual_categories == EXPECTED_CATEGORIES, (
+    f"planted-difficulty categories drifted from sheet 06's 15: "
+    f"missing={EXPECTED_CATEGORIES - actual_categories}, "
+    f"unexpected={actual_categories - EXPECTED_CATEGORIES}"
+)
+assert len(EXPECTED_CATEGORIES) == 15, "sheet 06 names exactly 15 planted difficulties for P1"
 
 # ---------------------------------------------------------------------------
 # Assemble channels/members and write output
@@ -474,4 +590,5 @@ print(f"proj-gamma (excluded) messages: {gamma_count}")
 print(f"group chat (excluded) messages: {group_count}")
 print(f"1:1 chat (excluded) messages:   {oneonone_count}")
 print(f"TOTAL messages (all channels+chats): {total}")
-print(f"Planted difficulties written: {len(LABELS)}")
+print(f"Planted difficulty categories written: {len(EXPECTED_CATEGORIES)} (sheet 06's 15)")
+print(f"Planted difficulty label rows written: {len(LABELS)}")
