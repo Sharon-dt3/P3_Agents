@@ -288,3 +288,16 @@ GroundingResult.failures itself, deliberately, if a capability genuinely
 wants that visibility -- the kernel returns failures separately from
 grounded_lines precisely so a caller can do this without changing the
 kernel.
+
+
+- SPN-07: eval results file (`eval/results.jsonl`) is append-only. A run
+  never edits or replaces a past run's line -- it only adds one. This
+  matches DECISION_LOG.md's own convention and keeps every run's numbers
+  comparable across prompt versions and model IDs over the project's
+  history, instead of only ever showing the latest run.
+
+- SPN-07: GoldenCaseRegistry is instantiated per run, not a module-level
+  singleton. Each call site (a real run, or a test) builds its own
+  registry and registers into it, so tests never leak cases into each
+  other and two future callers (e.g. P2 and P3 running their own evals)
+  never share mutable state by accident.
