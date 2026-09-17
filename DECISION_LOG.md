@@ -256,3 +256,35 @@ exactly the fabrication this decision exists to avoid. If a real,
 per-channel leave calendar becomes a requirement, that is a schema
 change to make deliberately, with real structured dates behind it, not
 a guess made here to fill a gap.
+
+## 2026-09-17 -- SPN-06: an ungroundable line is dropped, not rendered as "unsupported"
+
+Context: SPN-06's own WBS row gives two options for a factual line that
+never resolves to a real message -- "removed or explicitly marked
+unsupported." Both keep a false claim out of a final summary; they
+differ only in whether the gap itself is made visible to the reader.
+
+Decision: the grounding kernel drops an ungroundable line entirely from
+GroundingResult.grounded_lines. It is never rendered as a placeholder
+("[unsupported claim]" or similar) in a caller's final output. It IS
+logged (logger "p1.grounding.kernel", event "grounding_dropped"), with
+its reason and original text, exactly as the WBS's acceptance test
+names this outcome ("dropped and logged").
+
+Rationale: the summaries this kernel exists to protect (CHN-13/CHN-14,
+and their P2/P3 equivalents later) are read by managers about named
+colleagues. An awkward "[unsupported]" line would draw attention to a
+gap in a way that reads as a missing person or a missing event -- its
+own kind of misleading signal, arguably worse than the line simply not
+existing. Dropping keeps the rendered output honest by omission rather
+than by a visible asterisk; the log is where the gap is actually
+inspectable, by whoever is checking the pipeline's own health, not by
+the summary's end reader.
+
+Alternatives considered: rendering an explicit "unsupported" marker
+inline by default -- rejected for the reason above, though nothing here
+prevents a specific future caller from choosing to render
+GroundingResult.failures itself, deliberately, if a capability genuinely
+wants that visibility -- the kernel returns failures separately from
+grounded_lines precisely so a caller can do this without changing the
+kernel.
