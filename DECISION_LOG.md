@@ -527,3 +527,66 @@ kernel.
   quietly adds an adjective, a count, or a qualifier to any of the
   three phrases fails this test immediately, rather than only showing
   up as an unnoticed diff in a generated digest months later.
+
+- CHN-15: GC3 (citation rate) and GC4 (fabrication probe) are measured
+  as two separate scenarios, not one combined run, because they audit
+  different populations and would distort each other if mixed: GC3
+  needs a batch large enough that one invented id is a meaningful,
+  boundary-sitting fraction (19 real facts + 1 invented id = 19/20 =
+  0.95, exactly the target -- deliberately not a comfortably-clear
+  number, since the WBS's own rationale is making a point about how
+  tight this boundary is); GC4 needs a small, realistic end-to-end
+  digest run where a single deliberate fabrication attempt is easy to
+  trace to a specific, named cause. Folding both into one scenario
+  would have forced a choice between diluting GC3's ratio with GC4's
+  necessarily-adversarial input, or diluting GC4's clarity with GC3's
+  bulk of uneventful facts.
+
+- CHN-15: GC3 measures the model's *first, unaided* attempt at citing
+  a fact -- before SPN-06's retry-and-drop safety net gets a chance to
+  correct anything -- rather than the fully-grounded output that
+  eventually reaches a digest. The fully-grounded output is
+  guaranteed by construction to resolve 100% of the time (that is what
+  `verify_lines` inside `ground_with_retry` enforces before anything is
+  returned), so measuring citation rate against it would be a trivial,
+  always-1.0 metric that proves nothing. Measuring the raw first draft
+  instead makes ">=0.95" a real, falsifiable claim about how often the
+  model gets a mechanical, exact-copy task right unaided -- which is
+  also why the target is higher than GC1's 0.80: there is no judgment
+  call involved in copying an id verbatim, so the bar for "acceptable"
+  is much closer to perfect.
+
+- CHN-15: GC3 calls `p1.grounding.kernel.verify_lines` directly rather
+  than reimplementing "does this id resolve" as its own comparison.
+  Golden cases exist to protect real production code paths (the same
+  posture GC1 takes by scoring `p1.detection.rules.evaluate_message`
+  directly, and GC5 by calling the real
+  `p1.adapters.factory.get_teams_reader()`), not to duplicate their
+  logic and risk the duplicate silently drifting out of sync with the
+  real implementation.
+
+- CHN-15: GC4 does not trust SPN-06's own bookkeeping
+  (`GroundingResult.dropped`/`.failures`) to prove fabrication never
+  survives -- it re-derives the check independently, straight against
+  the database, for every line in the FINAL rendered
+  `DailySummaryResult.section_lines`: the message_id must exist in this
+  channel's `messages` table, that message's own
+  `classifications.label` must actually match the section the line was
+  placed under (a line under "decisions taken" citing a message the
+  store says is chatter is exactly as dishonest as citing a message
+  that doesn't exist at all -- both count as fabrication here, not
+  just the first), and the message must carry a real author. This is a
+  black-box probe on purpose: it would still catch a bug in the
+  grounding kernel itself, which trusting `result.dropped` never could.
+
+- CHN-15: GC4's scenario deliberately makes its own scripted gateway
+  attempt one real fabrication (citing a real message that belongs to
+  a *different* section) before correcting on retry, rather than
+  scripting an entirely clean run with nothing to catch. A "hard zero"
+  metric that never actually exercises the failure path it claims to
+  guard against would trivially pass without proving anything; this
+  golden case's own test
+  (`test_gc4_probe_is_not_vacuous_a_fabrication_was_really_attempted`)
+  pins that the fabrication attempt genuinely happened by asserting
+  the gateway was called exactly 5 times (4 sections, plus one retry),
+  not 4.
