@@ -11,11 +11,12 @@ Two independent checks, both AST-based:
    registry.
 
 2. Long-literal check (files that actually talk to the model): within a
-   module that imports p1.llm or p1.prompts -- i.e. a module capable of
-   calling the gateway at all -- any string constant long and wordy
-   enough to read as prose (not a docstring) is flagged too, in case a
-   prompt is built into a plain local variable before being passed along
-   under some other name.
+   module that imports p1.llm or p1.prompts, OR that IS one of those
+   modules itself (e.g. gateway.py doesn't need to import itself to be
+   capable of holding a hand-written prompt) -- any string constant long
+   and wordy enough to read as prose (not a docstring) is flagged too, in
+   case a prompt is built into a plain local variable before being passed
+   along under some other name.
 
 Scoping check 2 to model-calling modules is what keeps this precise:
 files that are all SQL (storage/messages_repo.py) or long descriptive
@@ -53,6 +54,18 @@ def _docstring_locations(tree: ast.Module) -> set[tuple[int, int]]:
     return locations
 
 
+def _is_own_model_calling_module(path: Path) -> bool:
+    """True if `path` itself lives inside src/p1/llm/ or src/p1/prompts/ --
+    those modules don't need to "import" themselves to be capable of
+    holding a hand-written prompt (this is exactly how the first version
+    of this check missed a literal added directly to gateway.py)."""
+    parts = path.resolve().relative_to(REPO_ROOT).parts
+    if "src" not in parts:
+        return False
+    remainder = parts[parts.index("src") + 1 :]
+    return remainder[:2] in (("p1", "llm"), ("p1", "prompts"))
+
+
 def _imports_model_calling_module(tree: ast.Module) -> bool:
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module and any(
@@ -62,6 +75,10 @@ def _imports_model_calling_module(tree: ast.Module) -> bool:
         if isinstance(node, ast.Import) and any(alias.name in MODEL_CALLING_MODULES for alias in node.names):
             return True
     return False
+
+
+def _is_model_calling_module(path: Path, tree: ast.Module) -> bool:
+    return _is_own_model_calling_module(path) or _imports_model_calling_module(tree)
 
 
 def _looks_like_prompt(text: str) -> bool:
@@ -82,8 +99,10 @@ def _violations_in_file(path: Path) -> list[tuple[Path, int, str, str]]:
                 if kw.arg in PROMPT_KEYWORD_ARGS and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
                     found.append((path, kw.value.lineno, kw.value.value[:80], f"literal passed as {kw.arg}="))
 
-    # Check 2: long prose-shaped literal, only within model-calling modules.
-    if _imports_model_calling_module(tree):
+    # Check 2: long prose-shaped literal, only within model-calling modules
+    # (either because the file imports p1.llm/p1.prompts, or because it IS
+    # one of those modules).
+    if _is_model_calling_module(path, tree):
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 if (node.lineno, node.col_offset) in docstring_locs:
