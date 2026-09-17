@@ -598,3 +598,19 @@ Decision: _fact_set() reads contributor lists, per-section counts and the partic
 Context/reasoning: GC9 is a determinism check, not a correctness check -- it asks whether two independent generations against the identical seeded window agree with each other, not whether either one is right (that is already GC1/GC3/GC4/GC5/GC10's job). Re-deriving a third answer straight from the database for each side would only prove the database matches itself twice, which is trivially true and would catch nothing. Comparing production's two actual outputs directly is what would catch a real regression -- for instance a change that made section assembly order-sensitive, or that let the grounding retry path silently drop a fact on one run and not the other.
 
 Alternatives considered: recomputing gather_daily_facts() and build_ledger() fresh for each side and asserting those two independent calls agree -- rejected, since both are already pure, deterministic functions over the same immutable seeded window and would trivially agree with themselves regardless of whether generate_daily_summary() reliably plumbs their output through to the final result end to end.
+
+## 2026-09-17 -- SPN-08: proposals table already existed; no new migration needed
+
+Decision: ProposalStore is built entirely against the `proposals` table already defined in 0001_initial.sql -- no new migration file for this row.
+
+Context/reasoning: The initial schema spike already scaffolded `proposals`, `write_log` and `audit` alongside the tables CHN-06 through CHN-15 needed, anticipating SPN-08/09's shape. Its columns match this row's own listed fields exactly (id, type, status, payload, original_model_output, source_refs, approver_id, created_at, decided_at, idempotency_key), so this row is purely the Python state machine on top of an already-correct table. One gap worth naming: original_model_output has no NOT NULL constraint at the schema level, unlike payload -- ProposalStore.create() requires it as a mandatory keyword argument regardless, so the guarantee is enforced at the application layer even though the column itself would technically permit a null.
+
+Alternatives considered: adding a NOT NULL migration for original_model_output -- deferred rather than rejected outright; SQLite's ALTER TABLE can't add a NOT NULL column without a default to an existing table with rows already using looser rules elsewhere in this schema (e.g. digests.published_at), so tightening it would mean a table rebuild for a guarantee the application layer already enforces just as reliably for every row this store itself ever writes.
+
+## 2026-09-17 -- SPN-08: create() refuses to reset an already-decided proposal on retry
+
+Decision: create()'s idempotency is ON CONFLICT(idempotency_key) DO NOTHING followed by a read-back of whatever row now exists, rather than DigestStore's own ON CONFLICT ... DO UPDATE pattern.
+
+Context/reasoning: A digest can be safely regenerated any time before it's published -- overwriting its content in place on a retried create() is exactly the right behavior (CHN-13). A proposal is different: by the time a caller retries the same idempotency_key, a human may already have approved or rejected it, and an overwrite-on-conflict create() would silently wipe that decision back to a fresh pending row -- the opposite of what an idempotency key is supposed to guarantee. DO NOTHING plus read-back means a retried create() is always a no-op against an already-decided proposal, and only ever inserts when the key is genuinely new.
+
+Alternatives considered: matching DigestStore's overwrite pattern verbatim for consistency -- rejected once the concrete failure mode (a retried digest job silently un-approving yesterday's already-approved digest) was worked through; consistency with a different store isn't worth reintroducing the exact bug idempotency keys exist to prevent.
