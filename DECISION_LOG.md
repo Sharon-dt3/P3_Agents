@@ -382,3 +382,90 @@ kernel.
   resent edit/delete were ever treated as brand-new rows instead of
   updates to their existing ones, the count would silently drift to 9
   with no other assertion here catching it.
+
+- CHN-13: the four content sections (what moved, blockers raised,
+  decisions taken, questions still awaiting an answer) are each their
+  own independent model call, not one combined call and not one call
+  per fact. This is what makes "a channel with no traffic produces an
+  honest empty summary" actually true rather than aspirational: a
+  section with zero facts returns immediately with an empty
+  GroundingResult, never building a prompt or touching the gateway at
+  all, so a silent channel (or one where every message was chatter/
+  noise) costs zero model calls, not four calls that each have to be
+  told "there is nothing here." Per-section calls also keep each
+  prompt's facts_block small and focused on one kind of fact, rather
+  than asking one call to juggle four different framings at once.
+
+- CHN-13: the message_lookup handed to SPN-06's grounding kernel for
+  each section's model call is a small in-memory dict built only from
+  that section's own facts (`{fact.message_id: fact.body_raw}`), not
+  the general sqlite-backed `grounding/message_lookup.py` lookup every
+  other caller uses. Plain reference-or-drop grounding can only tell
+  whether a message_id resolves to *some* real message somewhere in the
+  store -- it has no way to tell whether that message is one of the
+  facts actually handed to *this* call. A model that (incorrectly)
+  claims a real message id belonging to a different section, a
+  different day, or a different channel entirely would otherwise ground
+  successfully on content it was never given, which is exactly the kind
+  of fabrication this capability's own acceptance criteria exist to
+  catch. Scoping the lookup to exactly the facts handed to that one
+  call closes that hole; see
+  test_a_line_claiming_a_real_but_unrelated_message_id_is_dropped_not_kept
+  in tests/unit/test_daily_summary.py, which seeds a real blocker
+  message and proves a what_moved line claiming that same (real, but
+  unrelated) id is dropped across every retry attempt, never kept.
+
+- CHN-13: "questions still awaiting an answer" treats a question as
+  addressed the moment at least one non-deleted thread reply exists
+  against it (`messages.thread_root_id` pointing at the question's own
+  id) -- it does not try to judge whether that reply substantively
+  answers the question. This is a deliberate simplification, not an
+  oversight: CHN-09's six classification labels (update, question,
+  blocker, decision, chatter, noise) include no "answer" label, so
+  "was this question substantively answered" is not a fact this
+  codebase can honestly compute today. Any reply at all is treated as
+  the channel having addressed it. A deleted reply does not count
+  (test_a_question_answered_only_by_a_deleted_reply_is_still_awaiting_an_answer),
+  since a deleted reply is not evidence the channel currently
+  considers the question addressed.
+
+- CHN-13: the participation section adopts CHN-14's exact three-state
+  wording ("no message posted" / "posted, but no update" /
+  "excluded - on the exceptions list") now, directly from
+  docs/MASTER_IMPLEMENTATION_PLAN.md's own phrasing for that future WBS
+  row, rather than shipping a placeholder for CHN-14 to come back and
+  rewrite. CHN-14's own acceptance test ("a chatter-only member is
+  never reported as posted no message, an on-leave member is never
+  reported as silent") is already structurally guaranteed here, since
+  it is just CHN-10's `build_ledger` state distinctions
+  (NO_MESSAGE / POSTED_NO_UPDATE / EXCLUDED) rendered verbatim, not a
+  new judgment this module makes on its own.
+
+- CHN-13: the fact-gathering half of this capability lives in its own
+  module, `p1.reporting.facts` (pure DB reads, zero import of `p1.llm`
+  or `p1.prompts`), separate from `p1.reporting.daily_summary` (the
+  model-calling half). This is the same "facts in code, prose from the
+  model" boundary the WBS row itself names, just enforced at the module
+  level too: `tests/unit/test_no_inline_prompts.py` (SPN-05) treats any
+  module that imports `p1.llm`/`p1.prompts` as a "model-calling module"
+  and additionally scans it for long (>=200 char, >=30 word) string
+  literals as suspected inline prompts. The original single-file draft
+  of this capability imported both (to call the model) and separately
+  contained a long, wordy multi-line SQL literal for the fact query --
+  the combination tripped that lint test even though the literal was
+  plainly SQL, not a prompt. The test's own docstring names
+  `storage/messages_repo.py` as the precedent for how a SQL-heavy
+  module stays correctly out of scope: by never importing `p1.llm`/
+  `p1.prompts` in the first place. `p1.reporting.facts` follows that
+  same precedent rather than working around the heuristic (e.g. by
+  reformatting the SQL to dodge the length/word-count check).
+
+- CHN-13: `DigestStore.record()` upserts on `idempotency_key`
+  (`"{channel_id}:{date}:daily"`), matching the same
+  upsert-on-reprocess convention every other store in this codebase
+  already follows (MessageStore, ClassificationStore,
+  ParticipationStore) -- regenerating a day's digest before it has been
+  published replaces its content in place instead of duplicating a row.
+  `published_at` is deliberately never touched by this module: whether
+  a digest has been published, and enforcing that it is only ever
+  published once, is CHN-17/CHN-18's concern, not this one's.

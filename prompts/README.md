@@ -36,3 +36,9 @@ reproducible against the version they actually used.
   CHN-08's deterministic rules left unsettled into one of six labels
   (update, question, blocker, decision, chatter, noise) plus a
   confidence. Current version: v1.
+
+- `chn13_daily_summary` (CHN-13) -- turns one content section's worth
+  of already-gathered facts (what moved / blockers raised / decisions
+  taken / questions still awaiting an answer) into one line of grounded
+  prose per fact, never deciding what counts as a fact itself. Current
+  version: v1.
