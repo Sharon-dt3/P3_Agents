@@ -32,11 +32,14 @@ names as what "lets the digest be regenerated without factual drift":
      build_ledger rather than the persisted participation table, so a
      digest never reports a stale ledger) is rendered directly from
      code with no model call at all -- there is no prose to write for a
-     roster diff, and CHN-14's honest-rendering wording
+     roster diff. The rendering itself (CHN-14) lives in its own
+     module, p1.reporting.participation_rendering, for the same reason
+     facts.py is split out of this one: the exact wording
      ("no message posted" / "posted, but no update" /
-     "excluded - on the exceptions list") is already the exact phrasing
-     the master plan gives for those three states, adopted here now
-     rather than left for CHN-14 to rewrite. See DECISION_LOG.md.
+     "excluded - on the exceptions list") is a design decision this
+     digest and every future one must render identically, not a detail
+     that belongs to this particular digest's assembly code. See that
+     module's own docstring and DECISION_LOG.md.
 
 A channel with no traffic produces an honest empty summary: when a
 section's fact list is empty, _generate_section_lines returns
@@ -62,13 +65,7 @@ from p1.grounding.kernel import (
     ground_with_retry,
 )
 from p1.llm.structured import generate_structured
-from p1.participation.ledger import (
-    EXCLUDED,
-    NO_MESSAGE,
-    POSTED_NO_UPDATE,
-    ParticipationRecord,
-    build_ledger,
-)
+from p1.participation.ledger import ParticipationRecord, build_ledger
 from p1.prompts import Prompt, PromptRegistry
 from p1.reporting.facts import (
     SECTION_ORDER,
@@ -76,6 +73,7 @@ from p1.reporting.facts import (
     gather_daily_facts,
     render_facts_block,
 )
+from p1.reporting.participation_rendering import render_participation_section
 from p1.storage.db import DEFAULT_DB_PATH
 from p1.storage.digests_repo import DigestStore
 
@@ -103,15 +101,6 @@ _EMPTY_SECTION_TEXT = {
     "blockers": "No blockers were raised today.",
     "decisions": "No decisions were taken today.",
     "questions": "No questions are awaiting an answer today.",
-}
-
-# CHN-14's own exact wording for the three non-responder states,
-# adopted here rather than left as a placeholder -- see this module's
-# docstring.
-_PARTICIPATION_WORDING = {
-    NO_MESSAGE: "no message posted",
-    POSTED_NO_UPDATE: "posted, but no update",
-    EXCLUDED: "excluded - on the exceptions list",
 }
 
 
@@ -184,16 +173,12 @@ def _generate_section_lines(
     return ground_with_retry(generate_fn, message_lookup)
 
 
-def _render_participation_lines(records: list[ParticipationRecord]) -> list[str]:
-    return [f"{record.member_id} — {_PARTICIPATION_WORDING[record.state]}" for record in records]
-
-
 def _render_digest_markdown(
     display_name: str,
     day: date_type,
     section_lines: dict[str, list[FactualLine]],
     permalink_by_id: dict[str, str],
-    participation_lines: list[str],
+    participation: list[ParticipationRecord],
 ) -> str:
     parts = [f"# {display_name} — Daily Summary ({day.isoformat()})", ""]
 
@@ -208,12 +193,7 @@ def _render_digest_markdown(
                 parts.append(f"- {line.text} ([source]({permalink}))")
         parts.append("")
 
-    parts.append("## Participation")
-    if participation_lines:
-        parts.extend(f"- {entry}" for entry in participation_lines)
-    else:
-        parts.append("- Every roster member contributed an update today.")
-    parts.append("")
+    parts.extend(render_participation_section(participation))
 
     return "\n".join(parts)
 
@@ -242,10 +222,9 @@ def generate_daily_summary(
         dropped[section] = result.failures
 
     participation = build_ledger(channel_id, day, config, db_path=db_path)
-    participation_lines = _render_participation_lines(participation)
 
     content = _render_digest_markdown(
-        config.display_name, day, section_lines, permalink_by_id, participation_lines,
+        config.display_name, day, section_lines, permalink_by_id, participation,
     )
 
     return DailySummaryResult(

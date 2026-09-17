@@ -469,3 +469,61 @@ kernel.
   `published_at` is deliberately never touched by this module: whether
   a digest has been published, and enforcing that it is only ever
   published once, is CHN-17/CHN-18's concern, not this one's.
+
+- CHN-14: the participation-rendering code CHN-13 originally inlined
+  into daily_summary.py (the wording map plus the line-rendering
+  function) moved into its own module,
+  `p1.reporting.participation_rendering`. The WBS row's own framing --
+  "this section is read by managers about named colleagues, the
+  wording is a design decision, not a formatting detail" -- is what
+  justifies giving it a single, dedicated home: every digest surface
+  that ever needs to render a roster's participation (today, the daily
+  digest; a future weekly one) reuses the exact same three phrases
+  rather than each call site risking its own slightly different
+  rephrasing over time.
+
+- CHN-14: "no inferred reasons" is enforced structurally, not just by
+  convention. `render_participation_lines` takes only
+  `ParticipationRecord` (channel_id, member_id, date, state,
+  evidence_message_ids) -- CHN-10's `build_ledger` never copies a
+  channel's configured exception reason
+  (`ChannelConfig.exceptions[*].reason`, e.g. "On leave") onto the
+  record in the first place, so there is no reason text this function
+  could reach for even if a future edit tried to add it in. Proved
+  directly: `test_a_different_exception_reason_produces_byte_
+  identical_wording` builds the same excluded member under two
+  different configured reasons and asserts the rendered output is
+  identical either way -- not just that today's fixture's reason
+  string happens not to appear.
+
+- CHN-14: "no ranking of people" is enforced by this module never
+  reordering what it's given. `render_participation_lines` renders
+  records in exactly the order `build_ledger` returns them (already
+  sorted by member_id -- CHN-10's own
+  `test_ledger_is_sorted_by_member_id`), never resorted by state, by
+  how long someone's been silent, or by any other measure of severity.
+  `test_rendering_preserves_the_ledgers_own_order_never_resorting_
+  by_state` proves this directly by feeding a deliberately
+  out-of-member-id-order, mixed-state batch straight through and
+  asserting the output order is untouched.
+
+- CHN-14: the acceptance test itself ("the chatter-only member is
+  never reported as having posted no message, and the on-leave member
+  is never reported as silent") is re-proved directly against
+  `p1.reporting.participation_rendering` in its own test file, not
+  only implicitly through the full daily-digest test suite CHN-13
+  already has. CHN-13's tests still cover the same guarantee
+  end-to-end; this is a second, narrower, faster net around the exact
+  rendering contract, so a future refactor of digest assembly can't
+  quietly break this specific promise without a focused test catching
+  it immediately.
+
+- CHN-14: `PARTICIPATION_WORDING` is pinned by its own snapshot test
+  (`test_wording_map_is_exactly_the_three_specified_phrases_and_
+  nothing_else`) asserting the dict equals the three exact strings the
+  WBS row specifies, character for character. This is the practical
+  enforcement of "no adjectives" for a property that is otherwise a
+  judgment call, not a mechanically checkable one: a future edit that
+  quietly adds an adjective, a count, or a qualifier to any of the
+  three phrases fails this test immediately, rather than only showing
+  up as an unnoticed diff in a generated digest months later.
