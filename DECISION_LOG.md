@@ -140,3 +140,46 @@ those 5 would be, and inventing them ourselves would just be a different
 unbacked guess. Keeping the 3 out-of-spec categories as clearly-marked
 "bonus" cases -- rejected in favour of a clean 15-for-15 match against the
 one document that actually specifies this.
+
+## 2026-09-17 -- CHN-08: the update window is inclusive at both ends
+
+Context: CHN-08's deterministic rules need to decide whether a message
+posted exactly at update_window_start or update_window_end counts as
+"inside" the window. The CHN-07 rework deliberately dropped the one
+fixture case that tested this exact boundary (in favour of an
+unambiguous one-minute-late case) specifically so this decision could be
+made deliberately here, in the module that actually owns it, rather than
+being silently baked into a fixture's expected label.
+
+Decision: the window is inclusive of both ends --
+update_window_start <= posted_time <= update_window_end, evaluated in
+the channel's own configured timezone (never UTC, never the timestamp's
+original offset). A message posted at exactly 09:00:00 when the window
+opens at 09:00:00, or at exactly 11:00:00 when it closes at 11:00:00, is
+inside the window.
+
+Rationale: the alternative (exclusive on one or both ends) would silently
+penalise someone for posting at the exact minute a channel's config says
+updates are due, which is the opposite of what update_window_start and
+update_window_end are meant to communicate to a human reading the config.
+Inclusive-both-ends is also the reading that requires no asymmetry to
+justify -- excluding only the end (open interval on the right) is the
+usual convention for machine-generated ranges (like Python slicing), but
+there is no equivalent convention for a time-of-day window a person
+configures and reads back, and picking one end to exclude would need its
+own justification this decision doesn't have a reason to supply.
+
+This is implemented in src/p1/detection/rules.py's
+_within_update_window and covered directly by
+test_window_boundaries_are_inclusive in
+tests/unit/test_update_detection_rules.py.
+
+Alternatives considered: exclusive of the end only (start <= t < end),
+matching typical range-slicing convention -- rejected, since there is no
+equivalent "slicing" mental model for a human-configured time-of-day
+window, and it would exclude a message posted at the exact closing
+instant for no reason a channel owner reading the config would expect.
+Exclusive of both ends -- rejected outright, since it would also exclude
+the exact opening instant, an even harder case to justify to a user who
+configured update_window_start=09:00:00 and then had their 09:00:00 post
+disqualified.
