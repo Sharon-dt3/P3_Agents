@@ -333,3 +333,52 @@ kernel.
   difficulty members, as CHN-10's test does -- rejected for GC2
   specifically, since "exact set match" requires knowing every roster
   member's true state, not just the ones already known to be special.
+- CHN-12: GC5 runs the real production factory
+  (`p1.adapters.factory.get_teams_reader()`) end-to-end against the real
+  fixtures and the real `config/channels/*.yaml` allowlist, rather than
+  hand-building a `ScopedTeamsReader` from scratch -- the point of this
+  golden case is to protect the actual wiring CHN-03's ingestion uses in
+  production, not just the `ScopedTeamsReader` class in isolation
+  (`test_scope_gate.py` already covers that in full). Doing this
+  surfaced a real gap: `get_teams_reader()` constructs its
+  `ScopedTeamsReader` without ever passing a `db_path`, so the reader it
+  returns always records refusals against the module-level default
+  (`data/p1.db`, relative to the caller's cwd) no matter which database
+  the rest of the caller's code is actually using. Harmless in
+  production, where there is exactly one real db and it already has
+  migrations applied -- but it means the factory's return value can't
+  safely be used to prove refusal behaviour inside an isolated eval or
+  test without either polluting a real `data/p1.db` sitting in the repo
+  root or hitting "no such table: audit" against one that was never
+  initialised. GC5 works around this rather than depending on it: its
+  hard-zero ingest count runs `get_teams_reader()` for real (that half
+  never triggers a refusal at all, since `sync_all_allowlisted_channels`
+  only ever iterates the already-filtered channel list), and its three
+  direct-refusal proofs build their own `ScopedTeamsReader` from the
+  same real ingredients (`MockTeamsReader.from_fixtures()`,
+  `ChannelConfigStore().list_allowlisted_channels()`) pointed at this
+  case's own temp db. Recommended fix, not applied here (pre-existing
+  factory.py code, outside this WBS row's own scope, same posture CHN-11
+  took with the `ScriptedGateway` bug): let `get_teams_reader()` accept
+  an optional `db_path` and pass it through to `ScopedTeamsReader`.
+
+- CHN-12: GC10 is a synthetic two-delta-run scenario, not real fixture
+  data -- the committed fixtures have no distinct before/after snapshot
+  for the same message id, and an edit/delete/bot/system regression test
+  needs one. Built the same way `test_ingestion_sync.py`'s own tests
+  already build one: a second `MockTeamsReader` constructed from "run 1's
+  messages plus more appended at the end," sharing one
+  `SyncStateStore`/`MessageStore`/persisted delta token across both
+  `sync_channel()` calls. The resent edit and delete messages carry a
+  deliberately different `posted_at` than their run-1 originals, the
+  same point `test_ingestion_sync.py::test_edited_message_keeps_its_
+  original_post_time` already makes by calling `MessageStore.
+  upsert_messages()` directly twice -- GC10 makes the identical claim
+  but through two real delta-sync runs instead, so the guarantee is
+  proven at the level the WBS actually cares about ("across two delta
+  runs"), not just against the repo store in isolation. The exact-count
+  assertion (7, not 9) is the one place this case would have caught a
+  real regression an earlier version of this design missed: if the
+  resent edit/delete were ever treated as brand-new rows instead of
+  updates to their existing ones, the count would silently drift to 9
+  with no other assertion here catching it.
