@@ -630,3 +630,43 @@ Decision: on a successful send, guarded_send() calls proposal.apply() (SPN-08) a
 Context/reasoning: CHN-17, CHN-21 and CHN-23 will each have their own send_fn, but none of them should need to remember, separately, "and now mark this applied" and "and now log the attempt" -- those two things are true of every successful send through this gate, not particular to any one capability. Colocating them in the guard itself means a future capability that forgets to call apply() after its own send simply can't happen, because it never had to.
 
 Alternatives considered: leaving apply()/write_log entirely to each capability's own publish code -- rejected, since it would mean the exact same three lines get duplicated (or, worse, inconsistently omitted) across CHN-17, CHN-21 and CHN-23.
+
+## 2026-09-18 -- CHN-17: no summary-channel config field; publishes into the channel itself
+
+Decision: run_daily_digest_job publishes every channel's digest into that channel itself (payload["target_channel"] = channel_id), since ChannelConfig has no field naming a separate "designated summary channel" to publish into instead.
+
+Context/reasoning: the WBS row's own text says "Publishes into the channel, or a designated summary channel," but no such field exists anywhere in p1.config.schema.ChannelConfig -- adding one would mean a new field plus a migration for config data that doesn't exist yet, which is a real scope decision, not a one-line implementation detail to guess at silently. Publishing into the channel itself is the only option available without inventing new config shape, and it's also the simpler, safer default: a channel's own digest going back into that same channel is unsurprising, where a misconfigured summary-channel field could route a digest somewhere unexpected.
+
+Alternatives considered: adding a summary_channel_id: str | None field to ChannelConfig now and wiring it through -- deferred rather than rejected outright; that's a real config-schema change with its own migration and validation questions (does an empty summary channel need its own allowlist entry? what if it's set but wrong?) that belongs to its own row, not a decision to make silently inside this one's implementation.
+
+## 2026-09-18 -- CHN-17: two distinct idempotency keys for two distinct resources
+
+Decision: digest CONTENT keeps CHN-13's own key (f"{channel_id}:{date}:daily"); the decision to SEND that content gets a separate key (f"{channel_id}:{date}:daily_publish") on its own SPN-08 Proposal.
+
+Context/reasoning: these are genuinely different resources with different mutability rules. Content can be regenerated any number of times right up until it's sent (CHN-13's own upsert-on-reprocess pattern, unchanged by this row). The decision to publish, once made, must never be silently redone -- "exactly one digest per channel per day" is a promise about the SEND, not the content, so it needs its own idempotency key on its own record, one that SPN-08's status machine (and SPN-09's write guard) can govern independently of however many times the content underneath it gets regenerated.
+
+Alternatives considered: a single idempotency key shared between DigestStore.record() and the publish Proposal -- rejected; it would either block legitimate content regeneration before a proposal is decided, or (worse) let a proposal's identity depend on content that's still changing.
+
+## 2026-09-18 -- CHN-17: first-publish-requires-approval is answered per channel, across all dates
+
+Decision: "is this the first publish for this channel" is answered by DigestStore.has_ever_published(channel_id) -- true iff ANY date's digest for this channel has ever been marked published -- computed once, at the moment a channel's first publish proposal is created, not re-checked on every rerun.
+
+Context/reasoning: the row's own acceptance framing is "no channel ever receives an unexpected bot post," which is a statement about the channel's entire history, not about today in isolation. Checking has_ever_published() only at proposal-creation time (rather than every time the job runs) means a channel that's already past its first publish never gets asked again, even if this job is rerun many times a day -- once true, has_ever_published() only ever stays true, since digests.published_at is never unset.
+
+Alternatives considered: a config-level boolean flag (e.g. "first_publish_done") set by the job -- rejected in favor of deriving the answer from data that's already true (published_at) rather than introducing a second, potentially-drifting source of truth for the same fact.
+
+## 2026-09-18 -- CHN-17: is_due() and build_scheduler() are two layers, not one fake clock
+
+Decision: scheduler.py splits into a pure, clock-injectable is_due(config, moment) function and a separate build_scheduler() that wires real APScheduler CronTriggers -- rather than trying to make APScheduler itself accept an overridden clock.
+
+Context/reasoning: "a clock override for demos" could mean monkeypatching datetime.now inside APScheduler's own internals, but that's fighting a real scheduling library's own clock-handling code for no real benefit -- fragile across APScheduler versions, and it still wouldn't give a demo a simple, direct way to ask "would channel X fire right now at instant Y." Splitting the decision (is_due) from the mechanism (build_scheduler) means the override is just an ordinary function argument: a demo (or run_daily_digest_job's own `day` parameter) hands in whatever moment/day it wants to pretend it is, gets the same answer production's real scheduler would give at that real moment, and never touches APScheduler's internals at all. build_scheduler()'s CronTrigger fields are a direct translation of the same ChannelConfig fields is_due() reads, so the two are provably answering the same question, not two independent implementations that could drift apart.
+
+Alternatives considered: monkeypatching or dependency-injecting a clock into APScheduler itself -- rejected as more fragile and no more powerful than a pure function that any caller (test, demo, or a future admin tool) can call directly with whatever moment it likes.
+
+## 2026-09-18 -- CHN-17: rejected/already-applied publishes short-circuit before reaching guarded_send()
+
+Decision: run_daily_digest_job checks proposal.status against REJECTED and APPLIED itself, returning a plain JobResult without calling guarded_send(), rather than always routing every rerun through the guard and catching WriteRefusedError.
+
+Context/reasoning: guarded_send() (SPN-09) still refuses those cases too if it were called -- that's not in question. But routing a routine, expected rerun (a rejected proposal, or a day that's already been sent) through an exception-raising refusal path on every single invocation would mean using exceptions for ordinary control flow, and would write a "refused" write_log row every time a scheduler fires on an already-decided day, which is noise, not a real refused-send event. guarded_send() is still the sole gate for the one case that matters -- an approved proposal actually being sent -- and nothing in this row bypasses it for that case.
+
+Alternatives considered: always calling guarded_send() and letting it raise/refuse for every status -- rejected for the reasons above; kept as SPN-09's own defense-in-depth regardless (if this job's short-circuit logic ever had a bug, guarded_send() would still refuse a send that wasn't actually approved).
