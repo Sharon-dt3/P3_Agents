@@ -590,3 +590,11 @@ kernel.
   pins that the fabrication attempt genuinely happened by asserting
   the gateway was called exactly 5 times (4 sections, plus one retry),
   not 4.
+
+## 2026-09-17 -- CHN-16: GC9 compares production's own fact-set, not a third re-derivation
+
+Decision: _fact_set() reads contributor lists, per-section counts and the participation set directly off the real DailySummaryResult and ParticipationRecord objects that generate_daily_summary() actually returned, rather than independently re-querying the database for a third answer to compare both sides against.
+
+Context/reasoning: GC9 is a determinism check, not a correctness check -- it asks whether two independent generations against the identical seeded window agree with each other, not whether either one is right (that is already GC1/GC3/GC4/GC5/GC10's job). Re-deriving a third answer straight from the database for each side would only prove the database matches itself twice, which is trivially true and would catch nothing. Comparing production's two actual outputs directly is what would catch a real regression -- for instance a change that made section assembly order-sensitive, or that let the grounding retry path silently drop a fact on one run and not the other.
+
+Alternatives considered: recomputing gather_daily_facts() and build_ledger() fresh for each side and asserting those two independent calls agree -- rejected, since both are already pure, deterministic functions over the same immutable seeded window and would trivially agree with themselves regardless of whether generate_daily_summary() reliably plumbs their output through to the final result end to end.

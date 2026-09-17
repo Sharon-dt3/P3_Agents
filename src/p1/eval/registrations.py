@@ -1,11 +1,11 @@
 """
 Wires every currently-known golden case into a registry. This file is
 the one place a new capability's golden cases get plugged in -- CHN-11
-was the first (GC1, GC2); CHN-12 (GC5, GC10), CHN-15 (GC3, GC4), and
-later P2/P3 cases each get their own small registration module and are
-added to register_all here, one line per capability. The harness
-itself (cases.py, runner.py, results_store.py) never needs to change
-when this file grows.
+was the first (GC1, GC2); CHN-12 (GC5, GC10), CHN-15 (GC3, GC4), CHN-16
+(GC9), and later P2/P3 cases each get their own small registration
+module and are added to register_all here, one line per capability. The
+harness itself (cases.py, runner.py, results_store.py) never needs to
+change when this file grows.
 """
 
 from __future__ import annotations
@@ -17,7 +17,9 @@ def register_all(registry: GoldenCaseRegistry) -> None:
     from p1.eval.chn11_cases import register as register_chn11
     from p1.eval.chn12_cases import register as register_chn12
     from p1.eval.chn15_cases import register as register_chn15
+    from p1.eval.chn16_cases import register as register_chn16
 
     register_chn11(registry)
     register_chn12(registry)
     register_chn15(registry)
+    register_chn16(registry)
