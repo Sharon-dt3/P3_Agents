@@ -614,3 +614,19 @@ Decision: create()'s idempotency is ON CONFLICT(idempotency_key) DO NOTHING foll
 Context/reasoning: A digest can be safely regenerated any time before it's published -- overwriting its content in place on a retried create() is exactly the right behavior (CHN-13). A proposal is different: by the time a caller retries the same idempotency_key, a human may already have approved or rejected it, and an overwrite-on-conflict create() would silently wipe that decision back to a fresh pending row -- the opposite of what an idempotency key is supposed to guarantee. DO NOTHING plus read-back means a retried create() is always a no-op against an already-decided proposal, and only ever inserts when the key is genuinely new.
 
 Alternatives considered: matching DigestStore's overwrite pattern verbatim for consistency -- rejected once the concrete failure mode (a retried digest job silently un-approving yesterday's already-approved digest) was worked through; consistency with a different store isn't worth reintroducing the exact bug idempotency keys exist to prevent.
+
+## 2026-09-18 -- SPN-09: the approval lookup catches Exception broadly, on purpose
+
+Decision: guarded_send()'s try/except around store.get(proposal_id) catches bare Exception, not just ProposalNotFoundError.
+
+Context/reasoning: normal advice is to catch narrow, specific exception types so a real bug doesn't get silently swallowed. Here that advice is inverted deliberately: this row's own acceptance test names "documented timeout behaviour defaulting to not sending" as a requirement, and the failure modes that could show up in that lookup -- an unknown proposal id, a database error, a future networked store's connection timeout -- are all, from this function's point of view, the same case: a failure to positively confirm status == 'approved'. The one thing worse than refusing a send because of a transient bug in the lookup is sending because of one. Catching broadly and refusing is the fail-closed choice; catching narrowly would mean an unanticipated exception type falls through uncaught, past the refusal, with unclear consequences for whatever called guarded_send().
+
+Alternatives considered: catching only ProposalNotFoundError and letting any other exception propagate uncaught -- rejected, since an uncaught exception is not the same guarantee as a raised WriteRefusedError refusal, and a caller written to only check for WriteRefusedError would not reliably stop the send on a different exception type.
+
+## 2026-09-18 -- SPN-09: guarded_send() also marks the proposal applied and logs the attempt
+
+Decision: on a successful send, guarded_send() calls proposal.apply() (SPN-08) and writes a row to write_log itself, rather than leaving both to the caller.
+
+Context/reasoning: CHN-17, CHN-21 and CHN-23 will each have their own send_fn, but none of them should need to remember, separately, "and now mark this applied" and "and now log the attempt" -- those two things are true of every successful send through this gate, not particular to any one capability. Colocating them in the guard itself means a future capability that forgets to call apply() after its own send simply can't happen, because it never had to.
+
+Alternatives considered: leaving apply()/write_log entirely to each capability's own publish code -- rejected, since it would mean the exact same three lines get duplicated (or, worse, inconsistently omitted) across CHN-17, CHN-21 and CHN-23.
