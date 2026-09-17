@@ -183,3 +183,34 @@ Exclusive of both ends -- rejected outright, since it would also exclude
 the exact opening instant, an even harder case to justify to a user who
 configured update_window_start=09:00:00 and then had their 09:00:00 post
 disqualified.
+
+## 2026-09-17 -- CHN-09: low-confidence threshold is 0.6, not a fraction of chance rate
+
+Context: CHN-09's forced schema means the model always returns exactly
+one of the six labels -- it never gets to abstain or say "not sure."
+"Uncertain" therefore has to be a property this system computes from the
+model's own stated confidence number, and that requires picking a cutoff
+below which a classification is surfaced for review rather than acted on
+as settled.
+
+Decision: LOW_CONFIDENCE_THRESHOLD = 0.6 in src/p1/detection/classifier.py.
+A classification is flagged uncertain when confidence < 0.6.
+
+Rationale: the model is asked for its confidence in THIS SPECIFIC label
+being correct, not for how much better than random guessing it did. A
+six-way classification has a ~0.17 chance floor, but that is not what
+the confidence field measures, so anchoring the threshold to it would
+conflate two different questions. 0.6 reads the number the way it was
+asked for: below the point where the model itself is more unsure than
+sure about its own answer, which is exactly what "flagged, not guessed"
+in CHN-09's acceptance test means.
+
+Alternatives considered: a threshold derived from the six-label chance
+rate (e.g. ~0.3, twice chance) -- rejected, since it answers "did better
+than guessing," a different and less honest question than "is the model
+itself confident." A stricter threshold such as 0.8 -- rejected as a
+default, since it would route a large share of genuinely fine
+classifications to manual review for no reason beyond caution; 0.6 can
+be revisited once real eval data shows how the model's stated confidence
+actually correlates with correctness, but there is no such data yet to
+justify a stricter number today.

@@ -32,5 +32,7 @@ reproducible against the version they actually used.
 
 ## Capabilities
 
-None yet. The first real prompt lands with CHN-09 (the classifier for
-messages the CHN-08 deterministic rules can't settle).
+- `chn09_classify_message` (CHN-09) -- classifies a single message that
+  CHN-08's deterministic rules left unsettled into one of six labels
+  (update, question, blocker, decision, chatter, noise) plus a
+  confidence. Current version: v1.
