@@ -301,3 +301,35 @@ kernel.
   registry and registers into it, so tests never leak cases into each
   other and two future callers (e.g. P2 and P3 running their own evals)
   never share mutable state by accident.
+
+
+  - CHN-11: GC1's positive class is "excluded" (rule-detected), not
+  "update" -- and only precision is gated, not recall. A false positive
+  (a rule wrongly excluding a genuine update) is the failure that names
+  an innocent person as silent; a false negative (a bot/system/deleted/
+  late post slipping through to the classifier) is a nuisance, since
+  CHN-09 still has to judge it as chatter/noise downstream. This matches
+  section 6 of docs/MASTER_IMPLEMENTATION_PLAN.md exactly: "Recall
+  matters less than precision... a false 'no update' names an innocent
+  person." Recall is still computed and printed (target 0.0, so it can
+  never itself fail the harness), so a real recall regression is still
+  visible in the committed numbers even though it isn't gated.
+
+- CHN-11: GC2's three channel/day combinations were chosen after
+  actually running the real pipeline against the fixtures, not assumed
+  from what "ordinary" organic traffic should look like. This surfaced
+  that proj-alpha's organic messages on 2025-06-05 happen to land
+  outside the update window -- a real, previously-unverified fact,
+  since CHN-10's own fixture test only ever spot-checked 3 of the 6
+  roster members. It also surfaced a latent bug in
+  test_participation_against_fixtures.py's ScriptedGateway: it matches
+  by `if snippet in prompt`, and the classifier prompt's own worked
+  examples contain the literal phrase "Sounds good." (DIFF-CHATTER-01's
+  real message text), so that pattern silently matches every message's
+  prompt, not just fatima's -- harmless there only because none of that
+  test's 3 assertions depend on the messages it affects. GC2 uses a
+  corrected gateway that matches only the interpolated message body.
+  Alternatives considered: spot-checking only the pre-identified
+  difficulty members, as CHN-10's test does -- rejected for GC2
+  specifically, since "exact set match" requires knowing every roster
+  member's true state, not just the ones already known to be special.
