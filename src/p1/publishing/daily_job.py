@@ -26,14 +26,14 @@ First publish per channel requires approval; subsequent days run
 unattended -- decided by DigestStore.has_ever_published(channel_id), a
 question about every date this channel has ever published on, not just
 today's. A channel's very first due day creates a pending proposal and
-stops there (awaiting_approval); a human approves it the same way any
-other proposal is approved (SPN-08's own approve()), and only then does
-a rerun of this job actually send. Every later due day, this same job
-auto-approves its own proposal (via AUTO_APPROVE_APPROVER_ID, an
-approver identity that is honest about being the system rather than a
-person) and sends unattended in the same run -- "no channel ever
-receives an unexpected bot post" is satisfied once, at the channel's
-first publish, not re-litigated every day after.
+this job's own send attempt against it is refused (see below); a human
+approves it the same way any other proposal is approved (SPN-08's own
+approve()), and only then does a rerun of this job actually send. Every
+later due day, this same job auto-approves its own proposal (via
+AUTO_APPROVE_APPROVER_ID, an approver identity that is honest about
+being the system rather than a person) and sends unattended in the same
+run -- "no channel ever receives an unexpected bot post" is satisfied
+once, at the channel's first publish, not re-litigated every day after.
 
 No config field names a "designated summary channel" (ChannelConfig has
 none), so this job publishes each channel's digest into that channel
@@ -44,11 +44,21 @@ Sending itself is delegated to SPN-09's guarded_send() and an opaque
 `publisher` (a duck-typed object with a post_channel_message(channel_id,
 content) method -- CHN-22's own concern is building a real one; this
 job only needs *something* with that shape, same as write_guard.py only
-needs an opaque send_fn). guarded_send() is what actually refuses to
-send anything not currently approved, marks the proposal applied on
-success, and writes the write_log row -- this module never re-checks
-approval itself and never touches write_log directly, so there is
-exactly one place in the codebase any of that logic lives.
+needs an opaque send_fn). This function calls guarded_send() on EVERY
+run, whatever the proposal's current status -- it never short-circuits
+around it for a pending, rejected, or already-applied proposal. That is
+what makes CHN-18/GC6's own acceptance test true: "run the daily job
+three times over the same day" produces exactly one write_log "sent"
+row and two "refused" rows for the two suppressed reruns, because
+guarded_send() itself is what writes every one of those rows -- see
+DECISION_LOG.md for why an earlier version of this function shortcut
+around guarded_send() for those statuses, and why that turned out to be
+the wrong call once CHN-18 needed those suppressed attempts to actually
+be visible in write_log. WriteRefusedError is caught here only to
+translate SPN-09's one generic refusal into this job's own
+more-specific JobResult status (awaiting_approval / rejected /
+already_published) -- it is never used to skip calling guarded_send()
+in the first place.
 """
 
 from __future__ import annotations
@@ -59,8 +69,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from p1.approval.proposals import APPLIED, APPROVED, PENDING, REJECTED, ProposalStore
-from p1.approval.write_guard import guarded_send
+from p1.approval.proposals import APPLIED, PENDING, REJECTED, ProposalStore
+from p1.approval.write_guard import WriteRefusedError, guarded_send
 from p1.config.calendar import is_working_day
 from p1.config.schema import ChannelConfig
 from p1.prompts import PromptRegistry
@@ -129,12 +139,6 @@ def run_daily_digest_job(
     publish_key = f"{channel_id}:{date_str}:daily_publish"
     proposal = proposal_store.get_by_idempotency_key(publish_key)
 
-    if proposal is not None and proposal.status == APPLIED:
-        return JobResult(channel_id, date_str, ALREADY_PUBLISHED, "already sent for this channel and day")
-
-    if proposal is not None and proposal.status == REJECTED:
-        return JobResult(channel_id, date_str, REJECTED_STATUS, "publish was rejected for this channel and day")
-
     if proposal is None:
         source_refs = sorted(
             {line.message_id for lines in digest_result.section_lines.values() for line in lines}
@@ -145,6 +149,11 @@ def run_daily_digest_job(
             "target_channel": channel_id,  # no summary-channel config field -- see module docstring
             "content": digest_result.content,
         }
+        # has_ever_published() is asked ONLY here, at the moment a
+        # channel's publish proposal for this day is first created --
+        # never again on a later rerun for the same day, since the
+        # proposal itself (not this flag) is what governs every rerun
+        # from here on.
         is_first_publish_ever = not digest_store.has_ever_published(channel_id)
         proposal = proposal_store.create(
             type="daily_digest_publish",
@@ -153,32 +162,41 @@ def run_daily_digest_job(
             source_refs=source_refs,
             idempotency_key=publish_key,
         )
-        if is_first_publish_ever:
-            return JobResult(
-                channel_id, date_str, AWAITING_APPROVAL,
-                "first publish for this channel requires human approval",
-            )
-        proposal = proposal_store.approve(proposal.id, approver_id=AUTO_APPROVE_APPROVER_ID)
-
-    if proposal.status == PENDING:
-        return JobResult(channel_id, date_str, AWAITING_APPROVAL, "awaiting human approval")
-
-    # proposal.status == APPROVED here -- either just auto-approved
-    # above, or approved by a human since this job last ran.
-    assert proposal.status == APPROVED
+        if not is_first_publish_ever:
+            proposal = proposal_store.approve(proposal.id, approver_id=AUTO_APPROVE_APPROVER_ID)
+        # If this IS the first publish ever, proposal is left PENDING --
+        # the guarded_send() call below refuses it (and logs that
+        # refusal to write_log) exactly like any other pending proposal
+        # would, rather than this function special-casing "brand new"
+        # as a case that never even attempts a send.
 
     def send_fn():
         fresh = proposal_store.get(proposal.id)
         return publisher.post_channel_message(fresh.payload["target_channel"], fresh.payload["content"])
 
-    guarded_send(
-        proposal.id,
-        action_type="channel_post",
-        target=channel_id,
-        send_fn=send_fn,
-        store=proposal_store,
-        db_path=db_path,
-    )
+    try:
+        guarded_send(
+            proposal.id,
+            action_type="channel_post",
+            target=channel_id,
+            send_fn=send_fn,
+            store=proposal_store,
+            db_path=db_path,
+        )
+    except WriteRefusedError:
+        # guarded_send() has already logged this refusal to write_log --
+        # this only translates its one generic refusal into this job's
+        # own more specific status, by asking the store what the
+        # proposal's status actually is now.
+        current_status = proposal_store.get(proposal.id).status
+        if current_status == PENDING:
+            return JobResult(channel_id, date_str, AWAITING_APPROVAL, "awaiting human approval")
+        if current_status == REJECTED:
+            return JobResult(channel_id, date_str, REJECTED_STATUS, "publish was rejected for this channel and day")
+        if current_status == APPLIED:
+            return JobResult(channel_id, date_str, ALREADY_PUBLISHED, "already sent for this channel and day")
+        raise  # pragma: no cover -- defensive; no other status refuses
+
     digest_store.mark_published(
         idempotency_key=f"{channel_id}:{date_str}:daily",
         published_at=_now_iso(),
