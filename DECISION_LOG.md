@@ -214,3 +214,45 @@ classifications to manual review for no reason beyond caution; 0.6 can
 be revisited once real eval data shows how the model's stated confidence
 actually correlates with correctness, but there is no such data yet to
 justify a stricter number today.
+
+## 2026-09-17 -- CHN-10: an exception-list entry is not date-scoped
+
+Context: config/channels/*.yaml's `exceptions` list (e.g. proj-alpha's
+liam.oconnor, "Annual leave through 2025-06-13") gives ChannelConfig a
+member_id and a free-text reason, with no structured start/end date.
+CHN-10's participation ledger needs to decide, for one specific
+(channel, member, day), whether that member counts as "excluded" --
+and the WBS is explicit that the system must "never infer a reason for
+absence."
+
+Decision: an exceptions-list entry excuses its member_id for as long as
+the entry exists in the config file, full stop -- not for a date range
+parsed out of `reason`. build_ledger checks only set membership
+(member_id in {e.member_id for e in config.exceptions}), nothing else.
+
+Rationale: `reason` is free text for a human reading the config, not a
+machine-readable field, and there is no structured start/end date
+anywhere in ExceptionEntry to check instead. Parsing "through
+2025-06-13" out of a prose string to compute an effective date range
+would itself be exactly the inference this task's acceptance test
+forbids -- it would mean the system deciding, from unstructured text,
+why and for how long someone gets excused, rather than reading an
+explicit fact. Treating list membership itself as the fact respects
+that boundary: whoever edits the YAML (adding or removing an entry) is
+the one making the date judgement, not the code.
+
+This does mean an exception is "on" until a person removes it from the
+config -- there is no automatic expiry. That is consistent with every
+other config field in this system (roster, working_days, and so on all
+take effect only when the committed file changes) and with CHN-02's own
+governing principle that the config file is the system of record.
+
+Alternatives considered: adding start_date/end_date fields to
+ExceptionEntry and computing membership per day -- rejected for this
+task, not because it's a bad idea, but because doing it now would mean
+inventing dates for the one exception the current fixtures actually
+have (liam.oconnor's, whose real bound is only ever given as prose) --
+exactly the fabrication this decision exists to avoid. If a real,
+per-channel leave calendar becomes a requirement, that is a schema
+change to make deliberately, with real structured dates behind it, not
+a guess made here to fill a gap.

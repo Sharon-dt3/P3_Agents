@@ -43,21 +43,23 @@ settled messages (method='rule'|'model'), and unifying "what still needs
 classifying" is CHN-09's job, once the classifier path exists to unify
 with. This module is a pure, DB-free decision function so it is fully
 testable in isolation.
+
+Calendar/timezone arithmetic (working days, local time conversion) lives
+in p1.config.calendar, shared with CHN-10's participation ledger, which
+needs to agree with this module about exactly which days count.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime
 
 from p1.adapters.teams_reader import TeamsMessage
+from p1.config.calendar import is_working_day, local_datetime
 from p1.config.schema import ChannelConfig
 
 NOISE_LABEL = "noise"
-
-_WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
 @dataclass(frozen=True)
@@ -86,29 +88,6 @@ class RuleDecision:
             label=None,
             reason="no deterministic rule fired; eligible for classification",
         )
-
-
-def _parse_instant(value: str) -> datetime:
-    """Parse an ISO 8601 timestamp, tolerating a trailing 'Z' (UTC) the
-    way datetime.fromisoformat on Python 3.10 does not."""
-    if value.endswith("Z"):
-        value = value[:-1] + "+00:00"
-    return datetime.fromisoformat(value)
-
-
-def _local_datetime(message: TeamsMessage, config: ChannelConfig) -> datetime:
-    """The message's ORIGINAL post time (never edited_at), converted into
-    the channel's own configured timezone -- window and working-day
-    membership are always computed there, never in whatever zone the
-    timestamp happened to arrive in."""
-    posted = _parse_instant(message.posted_at)
-    return posted.astimezone(ZoneInfo(config.timezone))
-
-
-def _is_working_day(day: date, config: ChannelConfig) -> bool:
-    if day in config.non_working_dates:
-        return False
-    return _WEEKDAY_NAMES[day.weekday()] in config.working_days
 
 
 def _within_update_window(local_dt: datetime, config: ChannelConfig) -> bool:
@@ -152,14 +131,14 @@ def _rule_thread_reply_not_counted(message: TeamsMessage, config: ChannelConfig)
 
 
 def _rule_non_working_day(message: TeamsMessage, config: ChannelConfig) -> str | None:
-    local_dt = _local_datetime(message, config)
-    if not _is_working_day(local_dt.date(), config):
+    local_dt = local_datetime(message, config)
+    if not is_working_day(local_dt.date(), config):
         return f"{local_dt.date().isoformat()} is not a configured working day for this channel"
     return None
 
 
 def _rule_outside_update_window(message: TeamsMessage, config: ChannelConfig) -> str | None:
-    local_dt = _local_datetime(message, config)
+    local_dt = local_datetime(message, config)
     if not _within_update_window(local_dt, config):
         return (
             f"posted at {local_dt.time().isoformat()} {config.timezone}, outside the configured "
