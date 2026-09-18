@@ -2628,3 +2628,77 @@ share the exact same auth/db-init code path already proven by
 approve/reject yet with zero real ingested data, and manufacturing a
 fake one through the live connector (rather than through a real digest
 cycle) would test nothing this row's fix is actually about.
+
+## 2026-09-18 -- CHN-25's Copilot Studio connector, made solution-aware and wired into the live agent
+
+**Finding.** After the schema-init and ngrok-header fixes (previous entry,
+same day), restarting `make copilot-api` with the `--reload-dir src`
+Makefile fix (also this entry) confirmed the reload-storm class of hang
+can't recur, and both `health_health_get` and
+`list_pending_approvals_list_pending_approvals_post` re-verified live at
+200 through the Power Platform Test panel. The next real step -- wiring
+the "P1 Channel Approvals" custom connector into the "P1 Channel
+Intelligence" Copilot Studio agent as a Tool -- immediately hit a genuine
+blocker: Copilot Studio's "Add a tool" dialog rejected every one of the
+connector's 5 operations with a raw, unlocalized error string
+(`agentContent.addToolCustomConnectorNotSolutionAware`), not a cosmetic
+glitch -- the connector had been created directly in the environment's
+default Dataverse context rather than inside a solution, and Copilot
+Studio's tool-attachment flow requires a custom connector to be
+solution-aware before it can be attached as a tool (confirmed against
+Microsoft's own custom-connector-in-solutions documentation).
+
+**Build.**
+1. Root-caused the `uvicorn --reload` hang from the terminal log she
+   pasted: `uv run` had silently rebuilt her `.venv` (stale interpreter
+   symlink), and the unscoped `--reload` watcher treated the ~79-package
+   rebuild as source changes, causing an endless restart loop that
+   looked like a hung server. Fixed permanently in the `Makefile`'s
+   `copilot-api` target by adding `--reload-dir src`.
+2. Created a new unmanaged Dataverse solution, "P1 Channel Intelligence"
+   (publisher: DT3 Cloud Integrations, matching the publisher already
+   used for her other Copilot Studio agent solutions in this
+   environment), and added the existing "P1 Channel Approvals" custom
+   connector into it via Power Apps' "Add existing" > Automation >
+   Custom connector flow. This made the connector solution-aware without
+   touching its definition, its host, or anything in this repo.
+3. Re-opened "Add a tool" on the "P1 Channel Intelligence" agent (after a
+   hard page reload, since the stale error banner persisted client-side
+   until then) and added all 5 connector operations as Tools: Health,
+   List Pending Approvals, Approve, Reject, Update Channel Config.
+   Verified via a second full reload (agents list -> reopen) that all 5
+   persisted server-side, not just in client state.
+
+**Judgment calls.** (1) Created a dedicated new solution rather than
+adding the connector to one of the pre-existing unrelated solutions in
+this environment ("Meeting Agent", "AWS Integration for Copilot") --
+those belong to different projects, and mixing an unrelated custom
+connector into them would make future solution exports/imports for
+either project pull in components that don't belong. (2) Added all 5
+operations as Tools, including `Health` -- asked the user directly
+(AskUserQuestion) whether to include the connectivity-probe operation
+alongside the 4 real action operations, since this determines what
+capabilities the live production agent gets exposed to; she chose all 5.
+
+**Non-vacuousness.** N/A for the solution/tool-wiring change itself (no
+code path to bug-inject -- this is Power Platform/Dataverse
+configuration, not application code). The reload-storm fix was already
+bug-injection-verified in the prior entry; this entry only confirms it
+held on a real restart.
+
+**Verified live.** `health_health_get` (200, `{"status": "ok",
+"api_key_configured": true}`) and
+`list_pending_approvals_list_pending_approvals_post` (200,
+`{"approvals": []}`) both re-tested from the Power Platform Test panel
+after the Makefile fix and server restart -- schema validation succeeded
+on both, confirming the restart picked up every fix from the same day's
+earlier entry. All 5 Tools confirmed attached to the live "P1 Channel
+Intelligence" agent after a hard reload (agents list -> reopen), not
+just visible in an unsaved client-side state.
+
+**Not done, on purpose.** The agent's own instructions/prompt were not
+updated to describe when to call these new tools -- that's a separate,
+later step (teaching the agent when/how to use the approval tools in
+conversation), not part of making the connector reachable at all. The
+Dataverse table for channel config (the other half of CHN-25) is still
+not built.
