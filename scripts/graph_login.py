@@ -25,10 +25,19 @@ left untouched) and prints how long it's valid for, typically about an
 hour.
 
 Nothing here can succeed before tenant admin consent has actually been
-granted for this app's ChannelMessage.Read.All permission -- Microsoft
-will refuse the sign-in with an AADSTS65001 "needs admin approval"
-style error if it hasn't been (see DECISION_LOG.md's CHN-01 entry for
-where that stands).
+granted for the scopes below -- Microsoft will refuse the sign-in with an
+AADSTS65001 "needs admin approval" style error if either hasn't been (see
+DECISION_LOG.md's CHN-01 entry for where that stands). ChannelMessage.Read.All
+was the original CHN-01 grant; Channel.ReadBasic.All was added once
+GraphTeamsReader's list_channels() turned out to need its own, narrower
+permission (needed by the ingestion sync and the scope-gate's allowlist
+filtering). A third permission, ChannelMember.Read.All, is configured on
+the app registration but deliberately NOT requested here -- it's blocked on
+admin consent (only Alfred can grant it) and nothing live needs it yet,
+since list_channel_members() is written and tested against the mock but
+not wired into any real code path. Add it back to GRAPH_SCOPES once both
+are true: consent lands, and something live actually calls it -- see that
+same entry's follow-up note.
 
 This access token is short-lived by design -- re-run this script
 whenever it expires. Turning this into something that refreshes itself
@@ -51,7 +60,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
-GRAPH_SCOPES = ["ChannelMessage.Read.All"]
+GRAPH_SCOPES = [
+    "ChannelMessage.Read.All",  # list_messages -- reading channel content
+    "Channel.ReadBasic.All",  # list_channels -- ingestion sync + scope-gate allowlist filtering
+    # "ChannelMember.Read.All" is configured on the app registration but not
+    # requested here yet -- blocked on admin consent and unused by any live
+    # code path (see DECISION_LOG.md CHN-01 follow-up).
+]
 
 
 class DeviceFlowError(Exception):

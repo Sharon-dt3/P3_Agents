@@ -8,20 +8,27 @@ GC5 -- runs the real production wiring (p1.adapters.factory.
 get_teams_reader(), which is what CHN-04's scope gate and CHN-03's
 ingestion actually use in production) against the real committed
 fixtures, via p1.ingestion.sync.sync_all_allowlisted_channels(). That
-function only ever iterates reader.list_channels(), which
-ScopedTeamsReader already filters to the allowlist -- so proj-gamma
-(config/channels/proj-gamma.yaml, allowlisted: false) is never even
-attempted, and the store should end up with zero of its messages. That
-architectural invariant is asserted directly (a hard-zero count), plus
-three direct proofs that ScopeViolationError is actually raised for
-every kind of out-of-scope id a caller might try: the non-allowlisted
-channel itself, and two synthetic Teams chat ids (one 1:1-style, one
-group-style, both using the "19:...@unq.gbl.spaces" id shape
-test_scope_gate.py already uses) -- chats were never on the channel
-allowlist in the first place, so the same channel_id check refuses them
-with no separate "is this a chat" logic, exactly as
-test_list_messages_on_a_chat_id_raises_the_same_way already proves for
-one id.
+function only ever iterates the explicit channel_ids this case passes
+in from ChannelConfigStore().list_allowlisted_channels() -- the same
+config-driven allowlist ScopedTeamsReader itself is built from -- so
+proj-gamma (config/channels/proj-gamma.yaml, allowlisted: false) is
+never even named, let alone attempted, and the store should end up
+with zero of its messages. (Before CHN-01's follow-up, this same
+invariant held via reader.list_channels() instead, which Graph itself
+filtered to the allowlist; sync_all_allowlisted_channels() no longer
+calls that method at all -- see DECISION_LOG.md -- but the scope gate
+still refuses any out-of-scope id at the reader boundary regardless of
+where the caller's channel_id list came from, which is what the
+direct-proof half below exercises.) That architectural invariant is
+asserted directly (a hard-zero count), plus three direct proofs that
+ScopeViolationError is actually raised for every kind of out-of-scope
+id a caller might try: the non-allowlisted channel itself, and two
+synthetic Teams chat ids (one 1:1-style, one group-style, both using
+the "19:...@unq.gbl.spaces" id shape test_scope_gate.py already uses)
+-- chats were never on the channel allowlist in the first place, so
+the same channel_id check refuses them with no separate "is this a
+chat" logic, exactly as test_list_messages_on_a_chat_id_raises_the_same_way
+already proves for one id.
 
 Note on the direct-proof half: p1.adapters.factory.get_teams_reader()
 constructs its ScopedTeamsReader without ever passing a db_path, so the
@@ -132,7 +139,7 @@ def _measure_gc5() -> list[MetricResult]:
         # config/channels/*.yaml files -- exactly what CHN-03's
         # ingestion runs against in production.
         reader = get_teams_reader()
-        sync_all_allowlisted_channels(reader, sync_state, message_store)
+        sync_all_allowlisted_channels(reader, allowlisted, sync_state, message_store)
 
         placeholders = ", ".join("?" for _ in allowlisted)
         conn = get_connection(db_path)

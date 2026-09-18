@@ -2702,3 +2702,154 @@ later step (teaching the agent when/how to use the approval tools in
 conversation), not part of making the connector reachable at all. The
 Dataverse table for channel config (the other half of CHN-25) is still
 not built.
+
+## 2026-09-19 -- CHN-01 follow-up: GraphTeamsReader's real permission surface, and a second Alfred escalation
+
+**Finding.** The first live `graph_smoke_test.py` run (after CHN-01's
+`ChannelMessage.Read.All` consent landed and "Allow public client
+flows" was enabled) failed with a genuine, non-network `403 Forbidden`
+on `GET /teams/{id}/channels` -- not a token problem. Checked
+Microsoft's own Graph API docs: `list_channels()` (called by both
+`src/p1/ingestion/sync.py` and the scope-gate's own `list_channels()`
+filtering) needs `Channel.ReadBasic.All` at minimum;
+`ChannelMessage.Read.All` only ever covered `list_messages()`. A
+further check of `list_channel_members()` (used by the scope-gate's
+per-channel membership enforcement) found it needs
+`ChannelMember.Read.All` -- but also found, via
+`storage/messages_repo.py`'s own comment, that `list_channel_members()`
+is written and unit-tested against the mock but not actually called by
+any live code path yet.
+
+**Build.** Added `Channel.ReadBasic.All` and `ChannelMember.Read.All`
+as delegated Graph permissions on the `p1-teams-intelligence` app
+registration (user's own action, Azure Portal). Updated
+`scripts/graph_login.py`'s `GRAPH_SCOPES` and its docstring twice in
+the same session: first to request all three scopes, then -- once it
+became clear `ChannelMember.Read.All` is both blocked on admin consent
+(only Alfred can grant it) and unused by any live path -- reverted to
+requesting only `ChannelMessage.Read.All` and `Channel.ReadBasic.All`,
+leaving `ChannelMember.Read.All` configured-but-unrequested with a
+comment explaining why. Updated `tests/unit/test_graph_login.py`'s
+scope-list assertion to match, twice, for the same reason.
+
+**Second blocker found.** Re-running `graph_login.py` with the
+two-scope set still failed at Microsoft's sign-in screen with "Need
+admin approval" -- even though `Channel.ReadBasic.All`'s own row in
+Azure's API permissions table shows "Admin consent required: No". This
+means the DigitalT3 tenant has a consent policy requiring admin
+approval for any new permission grant to this app, overriding the
+per-permission flag (a tenant-wide "user consent disabled" style
+setting, not visible or changeable from this app registration's own
+blade). This is the same class of blocker as CHN-01's original one,
+now recurring for the two additional scopes: only Alfred can unblock
+it, by clicking "Grant admin consent for DigitalT3 Software Services
+Pvt Ltd" once on this app's API permissions page -- a single click
+that consents everything currently configured (`Channel.ReadBasic.All`,
+`ChannelMember.Read.All`, `ChannelMessage.Read.All`, `User.Read`).
+
+**Judgment calls.** (1) Chose to request only the two scopes actually
+needed by a live code path today, rather than blocking further work on
+all three landing at once -- reversible in one line once
+`ChannelMember.Read.All` is both consented and wired into a real
+feature. (2) Did not attempt any workaround for the tenant consent
+policy (a different flow, a different account, etc.) -- per this
+project's standing rule against bypassing access controls, the only
+correct path is asking the actual tenant admin.
+
+**Non-vacuousness.** N/A -- this is a live Azure AD/tenant
+configuration blocker, not application code; nothing here was
+testable by bug injection. The `403` and the "Need admin approval"
+screen are both real, observed failures against the live tenant, not
+simulated.
+
+**Verified.** Full test suite (435 passed, 2 skipped) and ruff clean
+after both `graph_login.py` scope-list changes.
+
+**Not done, on purpose.** A live Graph read is still not proven
+end-to-end -- blocked entirely on Alfred granting admin consent for
+`Channel.ReadBasic.All` (and, whenever it's actually wired in,
+`ChannelMember.Read.All`). No code change can substitute for that.
+
+## 2026-09-19 -- CHN-01/CHN-05: ingestion no longer needs Channel.ReadBasic.All at all
+
+**Finding.** Asked directly whether `Channel.ReadBasic.All` (the
+permission the previous entry escalated to Alfred) is really needed.
+It genuinely was, as the code stood: `sync_all_allowlisted_channels()`
+discovered which channels to sync by calling `reader.list_channels()`
+against Graph. But `config/channels/*.yaml` already names every
+allowlisted channel_id by hand -- the same source `ScopedTeamsReader`
+itself builds its allowlist from -- so Graph's enumeration was never
+telling the ingestion path anything it didn't already know from its
+own config. `list_messages()` only ever needs `ChannelMessage.Read.All`
+(already granted), and only needs a channel_id, which config already
+provides.
+
+**Build.** Changed `sync_all_allowlisted_channels()`
+(`src/p1/ingestion/sync.py`) to take an explicit `channel_ids`
+argument instead of calling `reader.list_channels()` -- callers now
+pass `ChannelConfigStore().list_allowlisted_channels()` directly.
+Updated both callers: `src/p1/eval/chn12_cases.py`'s GC5 (which
+already computed that exact list for its own assertions) and
+`scripts/run_walkthrough.py`'s beat 1 (now takes `(ALPHA, BETA)`
+explicitly; kept its own narration line calling `reader.list_channels()`
+directly, since that's illustrative-only against the mock reader and
+costs nothing -- only the *production* sync loop needed to stop
+depending on Graph's version of that call).
+
+Also updated `scripts/graph_smoke_test.py` to match: it no longer
+calls Graph's `list_channels()` to discover the team's channels either.
+It now reads the allowlist straight from `config/channels/*.yaml` and
+attempts `list_messages()` on each entry directly, reporting per
+channel_id whether Graph accepted or rejected it. Added a
+`config_store` seam to `run_smoke_test()` (same pattern as its existing
+`reader_factory` seam) so tests never touch this repo's real committed
+configs. Rewrote `tests/unit/test_graph_smoke_test.py` around the new
+behavior (temp-dir configs via `ChannelConfigStore`, a fake reader that
+can raise `httpx.HTTPStatusError` per channel_id) -- 6 tests, including
+one proving a rejected channel_id doesn't stop the others in the list
+from being tried.
+
+Net effect: neither the real ingestion path nor its own acceptance
+test needs `Channel.ReadBasic.All` at all now. The permission stays
+configured on the app registration (added last entry, never consented)
+in case a future feature genuinely needs live channel enumeration --
+nothing currently does.
+
+**Judgment calls.** (1) Kept `TeamsReader.list_channels()` in the
+interface itself (still used by `MockTeamsReader`/tests/the demo
+narration) -- only stopped the *production sync path* and the smoke
+test from calling it against Graph. (2) The smoke test trades away
+something real: it can no longer show every channel Graph can see on
+the team, so discovering a new real channel_id now means reading it
+by hand from Teams' own "Get link to channel" URL (the same way
+`GRAPH_TEAM_ID` was obtained) rather than from this script's own
+output. Flagged directly in the script's docstring and in-terminal
+messaging rather than silently dropped.
+
+**Non-vacuousness.** Real bug injection, not synthetic: temporarily
+changed GC5's call to pass `list(allowlisted) + ["19:proj-gamma@thread.tacv2"]`
+as `channel_ids` (simulating a config-reading bug that let an
+out-of-scope channel through) and re-ran
+`test_gc5_zero_out_of_scope_messages_after_a_full_ingest` --  it failed
+immediately with a real `ScopeViolationError` raised by the scope gate
+at the reader boundary, proving GC5's hard-zero assertion still
+depends on a genuine, independent safety check (the scope gate), not
+merely on trusting whatever list the caller happens to pass in.
+Reverted immediately after confirming the failure; re-ran clean.
+
+**Verified.** Full suite 436 passed, 2 skipped (was 435 before this
+entry -- one new test added), ruff clean, all 34 golden-case metrics
+still PASS via `scripts/run_eval.py` (including both GC5 checks), and
+`scripts/run_walkthrough.py` re-run end to end to confirm beat 1's
+ingest-and-refuse behavior is unchanged.
+
+**Not done, on purpose.** `ChannelMember.Read.All` is untouched by
+this entry -- still configured-but-unconsented, still blocked on
+Alfred, still unused by any live path (see the immediately preceding
+entry). A live Graph read is still not proven end-to-end; this entry
+only removes one of the two permissions blocking it. The other,
+`ChannelMessage.Read.All`, was already granted -- so once
+`config/channels/p1-agent-test.yaml`'s real channel_id
+(`19:ZVl0BYQCKWi4_oXsG_tuu3F4p5HsgQGobGhAMiZD_ro1@thread.tacv2`, added
+in an earlier session) is the only thing the next `graph_smoke_test.py`
+run needs to succeed against.

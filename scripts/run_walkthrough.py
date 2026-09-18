@@ -124,13 +124,17 @@ def _setup(db_path):
     return config_store, messages_by_channel
 
 
-def _beat_1_ingest_and_refuse(db_path, reader):
+def _beat_1_ingest_and_refuse(db_path, reader, channel_ids):
     _beat(1, "Ingest two channels, refuse the third")
     sync_state = SyncStateStore(db_path)
     message_store = MessageStore(db_path)
-    results = sync_all_allowlisted_channels(reader, sync_state, message_store)
+    results = sync_all_allowlisted_channels(reader, channel_ids, sync_state, message_store)
     for r in results:
         print(f"  ingested {r.channel_id}: {r.messages_ingested} message(s)")
+    # Narration only -- this mock reader's own list_channels() is a free,
+    # illustrative call (never touches real Graph, needs no permission),
+    # unlike production's sync_all_allowlisted_channels() above, which no
+    # longer calls it at all (see DECISION_LOG.md's CHN-01 follow-up).
     print(f"  (proj-gamma is not allowlisted -- {reader.list_channels()!r} never even names it)")
 
     print("\n  Attempting a direct read of proj-gamma anyway:")
@@ -265,7 +269,8 @@ def run_walkthrough(*, db_path=DEFAULT_DB_PATH, gateway=None, publisher=None, re
     publisher = publisher or get_teams_publisher()
     gateway = gateway or LLMGateway()
 
-    _beat_1_ingest_and_refuse(db_path, reader)
+    channel_ids = (ALPHA, BETA)
+    _beat_1_ingest_and_refuse(db_path, reader, channel_ids)
     _beat_2_chat_refused(reader)
 
     # Beats 3 onward need every message classified across the whole

@@ -8,6 +8,8 @@ by clearing it and resyncing that channel from scratch.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from pydantic import BaseModel
 
 from p1.adapters.teams_reader import DeltaTokenExpiredError, TeamsReader
@@ -39,15 +41,31 @@ def sync_channel(
 
 def sync_all_allowlisted_channels(
     reader: TeamsReader,
+    channel_ids: Iterable[str],
     sync_state: SyncStateStore,
     message_store: MessageStore,
 ) -> list[ChannelSyncResult]:
-    """reader is expected to already be scope-gated (CHN-04) -- list_channels()
-    only ever returns allowlisted channels, so this never has to re-check
-    scope itself."""
+    """channel_ids is the explicit allowlist to sync -- in production,
+    ChannelConfigStore().list_allowlisted_channels() (config/channels/*.yaml),
+    the same source ScopedTeamsReader itself builds its allowlist from.
+
+    This used to discover channels by calling reader.list_channels()
+    against Graph, which needs its own permission (Channel.ReadBasic.All)
+    beyond ChannelMessage.Read.All -- see DECISION_LOG.md's CHN-01
+    follow-up. Reading the allowlist from config instead means ingestion
+    no longer needs that permission at all: config already knows which
+    channels are in scope, so there's nothing left for Graph to tell us.
+
+    reader is still expected to be scope-gated (CHN-04) as defense in
+    depth: if channel_ids ever included something not actually on the
+    allowlist, sync_channel() -> reader.list_messages() would still
+    refuse it with ScopeViolationError rather than silently ingesting
+    it -- this function's own channel_ids argument is not trusted to be
+    the only thing standing between it and an out-of-scope read.
+    """
     return [
-        sync_channel(reader, channel.id, sync_state, message_store)
-        for channel in reader.list_channels()
+        sync_channel(reader, channel_id, sync_state, message_store)
+        for channel_id in channel_ids
     ]
 
 
