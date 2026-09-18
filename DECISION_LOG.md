@@ -1405,3 +1405,129 @@ currently claims -- rejected as scope creep into CHN-30's own row, and
 because a status table written before CHN-28/29 (fix the worst
 finding, edge-case pass) would already be stale by the time CHN-30
 actually runs.
+
+## 2026-09-18 -- CHN-28: the weakest metric wasn't the one closest to its threshold
+
+**Decision**: the metric picked to fix is GC1-precision/recall
+(`p1.eval.chn11_cases`), not GC3-citation-rate even though GC3 sits
+exactly on its own boundary (0.95 measured against a 0.95 target, zero
+margin). The real weakness found and fixed: of CHN-08's 8 deterministic
+rules (`deleted_message`, `system_message`, `bot_post`, `not_on_roster`,
+`thread_reply_not_counted`, `non_working_day`, `outside_update_window`,
+`below_length_floor`), GC1's own hand-labelled ground truth
+(`seed/fixtures/labels.csv`) only ever exercised 4 of them
+(`deleted_message`, `system_message`, `bot_post`,
+`outside_update_window`). The other 4 rules had zero representation --
+not one example anywhere in the fixture set that they were supposed to
+fire on -- so a regression in any of them (a flipped comparison in
+`_rule_below_length_floor`, a deleted branch in `_rule_not_on_roster`,
+`_rule_thread_reply_not_counted` always returning `None`) could never
+show up in either GC1-precision or GC1-recall, no matter how badly the
+rule engine broke, while both numbers kept reporting a perfect 1.0.
+
+**Context/reasoning**: before settling on this, GC3 was investigated
+first, since it's the only metric in the entire 34-metric harness
+sitting with literally zero margin. Two things ruled it out. First,
+`tests/unit/test_chn15_golden_cases.py::test_gc3_citation_rate_is_exactly_nineteen_of_twenty`
+pins that exact arithmetic (19 real facts + 1 invented id = 0.95) with
+its own docstring explaining this is deliberate -- "landing this metric
+directly on the boundary it targets... the arithmetic the WBS's own
+'>=0.95, not a typical 0.90' rationale is making a point about." Moving
+that number would reverse a previous, deliberate, already-reasoned
+design choice, not fix a defect. Second, and more fundamentally, GC3's
+"drafted" lines are hand-authored in `_measure_gc3` itself (Method:
+Python, no live model call) -- there is no production code path a real
+fix could touch that would ever move this number at all; the only way
+to change it is to edit the fixture, which is exactly what the pinning
+test forbids without a real reason. GC1-recall's own "never gates"
+design (target 0.0, `at_least`, mathematically always true) looked like
+an even more obviously "weak" tautological check next -- but
+`docs/MASTER_IMPLEMENTATION_PLAN.md`'s own C4 row says the target is
+"reported" for recall, not a number, and CHN-11's own
+`test_gc1_recall_target_never_gates_the_case_recall_is_reported_only`
+already asserts this is deliberate ("a missed update is a nuisance, a
+false 'no update' names an innocent person"). Gating recall with a real
+numeric floor would override that explicit, authoritative spec, not fix
+a bug in it.
+
+What both investigations turned up instead: GC1's reported numbers,
+gated or not, were resting on a ground truth that only ever tested half
+of the rule engine they claim to certify. That is the actual weakest
+thing in this harness -- not a number sitting near a line, but a
+"PASS" that was structurally incapable of catching a regression in 4 of
+8 rules.
+
+**The fix**: added one new hand-authored example per previously-untested
+rule, to the real committed fixtures (`seed/fixtures/messages.json`,
+`seed/fixtures/labels.csv`), all dated 2025-06-12 to avoid every date
+GC2 or `test_participation_against_fixtures.py` actually checks
+(proj-alpha/2025-06-05, proj-beta/2025-06-11):
+  - DIFF-ROSTER-01 (`not_on_roster`): james.okafor -- on proj-alpha's and
+    proj-beta's rosters -- posts in proj-gamma, where he is not
+    configured, exercising the "on this channel" half of roster
+    membership that the existing `on_leave`/`departed` planted
+    difficulties never touch.
+  - DIFF-THREADOFF-01 (`thread_reply_not_counted`): elena.rossi replies
+    in-thread to DIFF-LATE-01 in proj-beta, where
+    `count_thread_replies=false` -- the mirror image of DIFF-THREAD-01,
+    which proves the same rule's *other* branch (proj-alpha,
+    `count_thread_replies=true`, reply stays eligible).
+  - DIFF-SHORT-01 (`below_length_floor`): wei.chen posts "Done." (5
+    characters) inside proj-alpha's window on an ordinary working day --
+    on-roster, on-time, undeleted, non-bot/system, and excluded purely
+    on length.
+`chn11_cases._EXCLUDED_CATEGORIES` now includes all three new category
+names; `_load_rule_ground_truth()` itself needed no other change, since
+it already generically maps any listed category to `expected=True`.
+`non_working_day` was deliberately left uncovered -- CHN-29's own
+edge-case list already names "non-working day" as its scope, and
+proj-alpha's already-configured but unused `non_working_dates` field is
+exactly the hook that row will use; covering it here would be doing
+CHN-29's job early with no coordination.
+
+**Numbers, before and after** (`GC1-precision`/`GC1-recall`,
+`_measure_gc1()`): before -- n=16, tp=7 fp=0 fn=0 tn=9, precision=1.0,
+recall=1.0, but only 4 of 8 rules ever contributing a true positive.
+After -- n=19, tp=10 fp=0 fn=0 tn=9, precision=1.0, recall=1.0, now with
+7 of 8 rules contributing at least one true positive. The headline
+numbers didn't move (the rule engine was already correct on every
+category it was asked about) -- what changed is how much those
+identical-looking "1.0"s actually vouch for. Precision itself never
+moves from adding more *excluded*-class examples (a missed exclusion is
+a false negative, not a false positive -- precision was already covered
+by the 9 existing eligible/true-negative examples, each of which
+implicitly proves no rule wrongly fires on it); what these three
+examples strengthen is recall's own honesty, which is reported and
+committed to `eval/results.jsonl` and now quoted in the README, even
+though it isn't gated.
+
+**Non-vacuousness proof**: backup-mutate-test-restore against
+`src/p1/detection/rules.py`, one rule at a time -- disabling
+`_rule_not_on_roster`, then (after restoring) `_rule_thread_reply_not_counted`,
+then (after restoring) `_rule_below_length_floor`, each in turn, by
+making the function unconditionally `return None`. Every single
+injection dropped `GC1-recall` from 1.0 to 0.9 (fn: 0 -> 1) and left
+`GC1-precision` at 1.0 unchanged, exactly matching the "a missed
+exclusion costs recall, not precision" design this module's own
+docstring already states. All three restores confirmed byte-identical
+to the pre-injection file before moving to the next.
+
+**Alternatives considered**: reversing GC3's deliberate boundary
+arithmetic -- rejected, see above, this would erase a previous decision
+rather than fix a defect, and there is no production code path GC3
+exercises that a real fix could move anyway. Gating GC1-recall with a
+real numeric floor -- rejected, contradicts
+`docs/MASTER_IMPLEMENTATION_PLAN.md`'s own explicit "reported" spec and
+CHN-11's own test asserting that's deliberate. Also covering
+`non_working_day` in this same pass -- rejected, reserved for CHN-29
+which already names it, to avoid two rows racing to plant the same
+scenario.
+
+**Also added**: `tests/unit/test_update_detection_against_fixtures.py`
+gets three new dedicated assertions
+(`test_message_not_on_roster_is_excluded_as_not_on_roster`,
+`test_thread_reply_is_excluded_when_channel_does_not_count_them`,
+`test_short_message_is_excluded_as_below_length_floor`), matching this
+file's existing one-assertion-per-planted-difficulty style, so these
+three rules have a permanent, individually-named regression test
+outside the aggregate GC1 metric too.

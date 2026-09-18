@@ -44,7 +44,7 @@ def test_registered_cases_run_via_the_registry():
 # --- GC1: ground truth + precision/recall ------------------------------
 
 
-def test_rule_ground_truth_has_the_expected_16_message_split():
+def test_rule_ground_truth_has_the_expected_19_message_split():
     ground_truth = _load_rule_ground_truth()
     excluded = [mid for mid, expected in ground_truth.items() if expected]
     eligible = [mid for mid, expected in ground_truth.items() if not expected]
@@ -58,6 +58,10 @@ def test_rule_ground_truth_has_the_expected_16_message_split():
             "diff-del-02",
             "diff-del-03",
             "diff-late-01",
+            # CHN-28: previously-uncovered rules -- see DECISION_LOG.md.
+            "diff-roster-01",
+            "diff-threadoff-01",
+            "diff-short-01",
         ]
     )
     assert sorted(eligible) == sorted(

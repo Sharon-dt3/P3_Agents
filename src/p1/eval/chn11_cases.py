@@ -24,6 +24,19 @@ DECISION_LOG.md and section 6 of docs/MASTER_IMPLEMENTATION_PLAN.md
 ("Recall matters less than precision: a missed [exclusion] is a
 nuisance, a false 'no update' names an innocent person").
 
+CHN-28 update: until this row, this ground truth only ever scored 4 of
+CHN-08's 8 deterministic rules (bot_post, system_message,
+deleted_message, outside_update_window) -- the other 4
+(not_on_roster, thread_reply_not_counted, non_working_day,
+below_length_floor) had zero representation here, so a regression in
+any of them could never show up in either printed number, however
+perfect precision/recall looked. Three of the four now have a real,
+hand-authored positive example each (DIFF-ROSTER-01, DIFF-THREADOFF-01,
+DIFF-SHORT-01 in labels.csv) -- non_working_day is deliberately left for
+CHN-29's own edge-case pass, which already names it. See DECISION_LOG.md
+for the full reasoning and the bug-injection proof that each new example
+is load-bearing.
+
 GC2 -- non-responder set exact match, including all three participation
 states (excluded / posted_no_update / no_message), across three
 independently hand-verifiable channel/day combinations:
@@ -81,7 +94,21 @@ GAMMA = "19:proj-gamma@thread.tacv2"
 # CHN-09/CHN-10 territory -- content judgement or participation
 # arithmetic, not rule exclusion -- and carry no structural claim for
 # this metric to score.
-_EXCLUDED_CATEGORIES = frozenset({"bot_post", "system_post", "deleted_message", "late_post_after_window"})
+_EXCLUDED_CATEGORIES = frozenset(
+    {
+        "bot_post",
+        "system_post",
+        "deleted_message",
+        "late_post_after_window",
+        # CHN-28: three more of CHN-08's own eight rules, previously
+        # scored by nothing in this ground truth at all -- see
+        # DECISION_LOG.md for why this was the weakest metric in the
+        # harness and how these were chosen.
+        "not_on_roster",
+        "thread_reply_when_not_counted",
+        "below_length_floor",
+    }
+)
 _ELIGIBLE_CATEGORIES = frozenset(
     {
         "edited_message",

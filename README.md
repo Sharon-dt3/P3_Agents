@@ -50,9 +50,10 @@ See docs/MASTER_IMPLEMENTATION_PLAN.md for the full six-week, three-agent progra
 
 **34/34 golden-case metrics passing, across all 12 golden cases (GC1-GC12).**
 
-Latest committed run: 2026-09-18T05:29:40Z -- model `claude-sonnet-4-20250514`,
+Latest committed run: 2026-09-18T05:51:27Z -- model `claude-sonnet-4-20250514`,
 prompt versions `chn09_classify_message@v1`, `chn13_daily_summary@v1`,
-`chn19_weekly_narrative@v1`.
+`chn19_weekly_narrative@v1`. (GC1's ground truth grew from 16 to 19
+messages in CHN-28 -- see DECISION_LOG.md.)
 
 Every run appends one full record (timestamp, model id, every prompt
 capability's version, and every metric's measured/target/pass-fail) to

@@ -1245,6 +1245,20 @@
       "is_system": false,
       "body": "@james.okafor should this run before the deploy, or after -- trying to get the order right.",
       "permalink": "https://teams.microsoft.com/l/message/19:proj-alpha@thread.tacv2/diff-mention-01"
+    },
+    {
+      "id": "diff-short-01",
+      "channel_id": "19:proj-alpha@thread.tacv2",
+      "author_id": "wei.chen",
+      "thread_root_id": null,
+      "posted_at": "2025-06-12T09:30:00+05:30",
+      "edited_at": null,
+      "deleted_at": null,
+      "is_deleted": false,
+      "is_bot": false,
+      "is_system": false,
+      "body": "Done.",
+      "permalink": "https://teams.microsoft.com/l/message/19:proj-alpha@thread.tacv2/diff-short-01"
     }
   ],
   "19:proj-beta@thread.tacv2": [
@@ -2675,6 +2689,20 @@
       "is_system": false,
       "body": "Merged the PR for the retry queue, moving on to the caching layer.",
       "permalink": "https://teams.microsoft.com/l/message/19:proj-beta@thread.tacv2/diff-late-01"
+    },
+    {
+      "id": "diff-threadoff-01",
+      "channel_id": "19:proj-beta@thread.tacv2",
+      "author_id": "elena.rossi",
+      "thread_root_id": "diff-late-01",
+      "posted_at": "2025-06-12T09:15:00-04:00",
+      "edited_at": null,
+      "deleted_at": null,
+      "is_deleted": false,
+      "is_bot": false,
+      "is_system": false,
+      "body": "Same here, following up on the caching layer work once the retry queue lands.",
+      "permalink": "https://teams.microsoft.com/l/message/19:proj-beta@thread.tacv2/diff-threadoff-01"
     }
   ],
   "19:proj-gamma@thread.tacv2": [
@@ -3027,6 +3055,20 @@
       "is_system": false,
       "body": "Merged the PR for the reporting dashboard, moving on to the next item.",
       "permalink": "https://teams.microsoft.com/l/message/19:proj-gamma@thread.tacv2/diff-name-01"
+    },
+    {
+      "id": "diff-roster-01",
+      "channel_id": "19:proj-gamma@thread.tacv2",
+      "author_id": "james.okafor",
+      "thread_root_id": null,
+      "posted_at": "2025-06-12T09:30:00+05:30",
+      "edited_at": null,
+      "deleted_at": null,
+      "is_deleted": false,
+      "is_bot": false,
+      "is_system": false,
+      "body": "Stopping by from proj-alpha to flag something in gamma's rollout notes.",
+      "permalink": "https://teams.microsoft.com/l/message/19:proj-gamma@thread.tacv2/diff-roster-01"
     }
   ],
   "19:groupchat_9f2a1c@unq.gbl.spaces": [

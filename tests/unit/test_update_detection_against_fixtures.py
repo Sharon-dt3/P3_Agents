@@ -95,6 +95,49 @@ def test_late_post_is_excluded_as_outside_update_window():
     assert decision.rule_name == "outside_update_window"
 
 
+def test_message_not_on_roster_is_excluded_as_not_on_roster():
+    """CHN-28: james.okafor posts in proj-gamma, where he is a real Teams
+    member but not on the config roster -- previously the not_on_roster
+    rule had zero representation anywhere in GC1's own ground truth."""
+    labels = _load_labels()
+    messages = _message_index()
+    configs = _configs_by_channel()
+
+    msg_id = labels["DIFF-ROSTER-01"]["message_ids"]
+    message = messages[msg_id]
+    decision = evaluate_message(message, configs[message.channel_id])
+    assert decision.rule_name == "not_on_roster"
+
+
+def test_thread_reply_is_excluded_when_channel_does_not_count_them():
+    """CHN-28: the mirror image of DIFF-THREAD-01 (proj-alpha,
+    count_thread_replies=true, reply stays eligible) -- the identical
+    shape of message in proj-beta, where count_thread_replies=false,
+    must be excluded instead."""
+    labels = _load_labels()
+    messages = _message_index()
+    configs = _configs_by_channel()
+
+    msg_id = labels["DIFF-THREADOFF-01"]["message_ids"]
+    message = messages[msg_id]
+    decision = evaluate_message(message, configs[message.channel_id])
+    assert decision.rule_name == "thread_reply_not_counted"
+
+
+def test_short_message_is_excluded_as_below_length_floor():
+    """CHN-28: an on-roster, on-time, undeleted, non-bot/system message
+    can still be excluded on length alone -- previously untested by any
+    planted difficulty."""
+    labels = _load_labels()
+    messages = _message_index()
+    configs = _configs_by_channel()
+
+    msg_id = labels["DIFF-SHORT-01"]["message_ids"]
+    message = messages[msg_id]
+    decision = evaluate_message(message, configs[message.channel_id])
+    assert decision.rule_name == "below_length_floor"
+
+
 def test_edited_messages_remain_eligible_for_classification():
     """Editing must never disqualify an on-time post -- CHN-08 keys off
     posted_at, and none of these edits should trip any structural rule."""
