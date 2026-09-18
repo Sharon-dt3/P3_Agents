@@ -261,7 +261,7 @@ def _beat_8_escalation(config_store, publisher, db_path):
 
 def run_walkthrough(*, db_path=DEFAULT_DB_PATH, gateway=None, publisher=None, reader=None) -> None:
     config_store, messages_by_channel = _setup(db_path)
-    reader = reader or get_teams_reader()
+    reader = reader or get_teams_reader(db_path=db_path)
     publisher = publisher or get_teams_publisher()
     gateway = gateway or LLMGateway()
 

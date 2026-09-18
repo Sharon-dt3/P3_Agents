@@ -23,9 +23,16 @@ from p1.adapters.teams_reader import TeamsReader
 from p1.adapters.teams_reader_mock import MockTeamsReader
 from p1.config.loader import ChannelConfigStore
 from p1.governance.scope_gate import ScopedTeamsReader
+from p1.storage.db import DEFAULT_DB_PATH
 
 
-def get_teams_reader() -> TeamsReader:
+def get_teams_reader(db_path: str = DEFAULT_DB_PATH) -> TeamsReader:
+    """db_path defaults to DEFAULT_DB_PATH (production behaviour, unchanged
+    for every existing caller that passes nothing) but must be threaded
+    through explicitly by any caller -- like scripts/run_walkthrough.py --
+    that was itself given a different db_path, since ScopedTeamsReader
+    writes audit rows to whatever db_path it is constructed with, not
+    to whatever db the rest of that caller's flow happens to be using."""
     mode = os.environ.get("TEAMS_READER_MODE", "mock")
 
     if mode == "mock":
@@ -42,7 +49,7 @@ def get_teams_reader() -> TeamsReader:
         raise ValueError(f"Unknown TEAMS_READER_MODE: {mode!r}")
 
     allowlisted_channel_ids = ChannelConfigStore().list_allowlisted_channels()
-    return ScopedTeamsReader(reader, allowlisted_channel_ids)
+    return ScopedTeamsReader(reader, allowlisted_channel_ids, db_path=db_path)
 
 
 def get_teams_publisher() -> TeamsPublisher:

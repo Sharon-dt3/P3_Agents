@@ -2073,3 +2073,74 @@ asked about directly and declined in favor of the consolidated script,
 for the same reason CHN-31 built a real entry point instead of leaving
 `make run` a placeholder: a recording is a worse take with more cuts
 and more chances to fumble a command live.
+
+## 2026-09-18 -- CHN-32 CI fix: the walkthrough test only passed locally by accident
+
+**Finding.** CI's `lint-and-test` run failed on a clean checkout:
+`tests/unit/test_run_walkthrough.py::test_walkthrough_runs_every_beat_end_to_end`
+-- `sqlite3.OperationalError: no such table: audit`, raised from
+`ScopedTeamsReader._record_refusal()` while refusing proj-gamma in
+beat 1. The test had passed locally (397 passed) every time it was
+run before committing. Root cause: the test builds its own
+`tmp_path/"test.db"` and passes it as `db_path=` to
+`run_walkthrough()`, which correctly ran `init_db(db_path)` against
+that path -- but the test does **not** pass a `reader=`, so
+`run_walkthrough()` fell back to its default,
+`reader = reader or get_teams_reader()`. `get_teams_reader()` had no
+`db_path` parameter at all: it always built `ScopedTeamsReader(reader,
+allowlisted_channel_ids)`, which itself defaults its own `db_path` to
+`p1.storage.db.DEFAULT_DB_PATH` (`data/p1.db`) -- a completely
+different file than the one `init_db()` had just migrated. Locally
+this never surfaced, because `data/` is gitignored and every developer
+machine that has ever run `make run` or `make walkthrough` already has
+a real, migrated `data/p1.db` sitting in the repo root with an `audit`
+table in it, so the reader's audit-write silently succeeded against
+the *real* database instead of the test's isolated one -- the test was
+never actually isolated, it was borrowing house state and reporting a
+false pass. A clean CI checkout has no `data/` directory at all, so
+`get_connection()` opened a brand-new, empty SQLite file with no
+`audit` table, and the refusal write failed. This is the exact class
+of bug CHN-31 exists to catch (a clean clone can't reproduce a result
+that depends on leftover local state) -- CHN-31 just didn't happen to
+cover this particular script.
+
+**Fix.** `src/p1/adapters/factory.py`'s `get_teams_reader()` now takes
+an optional `db_path: str = DEFAULT_DB_PATH` and threads it into the
+`ScopedTeamsReader` it constructs, instead of relying on that class's
+own default. Every existing caller that passes nothing is unaffected
+(same default, same behaviour). `scripts/run_walkthrough.py`'s
+`run_walkthrough()` now calls `get_teams_reader(db_path=db_path)`
+instead of `get_teams_reader()`, so a caller (a test, or a future
+script) that supplies its own `db_path` gets a reader whose audit
+writes actually land in that same database.
+
+**Non-vacuousness (bug injection).** Moved `data/` aside entirely (a
+true clean-clone simulation, not just deleting one file) and ran the
+full suite: 397 passed, 2 skipped -- confirms the fix holds with no
+leftover local state to hide behind. Then reverted only
+`run_walkthrough.py`'s one-line change (kept the `factory.py` fix) and
+reran `test_run_walkthrough.py`: failed with the identical
+`sqlite3.OperationalError: no such table: audit` CI had reported,
+proving that line is the load-bearing half of the fix, not the
+`factory.py` signature change alone. Restored the fix (byte-identical
+to the working version via a kept backup), reran: 397 passed, 2
+skipped again. Ruff clean throughout. Finally moved the real `data/`
+directory back into place and ran the full suite once more to confirm
+normal (non-clean-clone) local behaviour is unchanged.
+
+**Not done, on purpose.** `tests/unit/test_run_walkthrough.py` itself
+was not changed -- it doesn't need to pass an explicit `reader=` now
+that the default one it gets is correctly bound to its own `db_path`.
+Left `get_teams_reader()`'s other two call sites
+(`tests/unit/test_teams_reader_mock.py`,
+`src/p1/eval/chn12_cases.py`) untouched -- both already call it with
+no arguments and rely on its default, which is unchanged.
+
+**Alternatives considered.** Making the test pass its own
+`ScopedTeamsReader(MockTeamsReader.from_fixtures(), [...], db_path=db_path)`
+directly, bypassing `get_teams_reader()` entirely -- rejected, because
+CHN-32's own script docstring makes a point of exercising
+`p1.adapters.factory.get_teams_reader()` specifically, the same
+production wiring GC5 proves, "not a second, demo-only code path" --
+patching the test around the bug would have undermined that claim
+instead of fixing it.
