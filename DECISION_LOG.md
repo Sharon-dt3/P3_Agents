@@ -1531,3 +1531,123 @@ gets three new dedicated assertions
 file's existing one-assertion-per-planted-difficulty style, so these
 three rules have a permanent, individually-named regression test
 outside the aggregate GC1 metric too.
+
+## 2026-09-18 -- CHN-29: three of the eight scenarios were already proven; five weren't
+
+**Decision**: before writing anything, each of the row's eight named
+scenarios was checked against the existing test suite for a real,
+dedicated proof -- not assumed missing, and not assumed covered just
+because a fixture with the right shape existed somewhere. Three already
+had one:
+  - "A day with no messages in a channel" -- DIFF-SILENT-01 (proj-beta,
+    2025-06-11) is exactly CHN-11's own `GC2-proj-beta-2025-06-11`
+    (`test_gc2_measure_matches_hand_verified_expected_sets`): the full
+    7-member roster lands as `no_message`, asserted as an exact-set
+    match, not a proportion.
+  - "Graph throttling and delta-token expiry" -- both already have
+    dedicated, passing tests from earlier rows:
+    `test_list_messages_retries_on_429_then_succeeds`,
+    `test_list_messages_raises_after_exhausting_throttle_retries`,
+    `test_list_messages_raises_on_expired_delta_token`
+    (`tests/unit/test_teams_reader_graph.py`), and
+    `test_expired_delta_token_triggers_a_clean_resync`
+    (`tests/unit/test_ingestion_sync.py`, which also proves
+    `sync_channel()`'s own clear-and-full-resync recovery, not just the
+    reader raising).
+  - "Malformed model output" -- `p1.llm.structured.generate_structured()`
+    is the one shared validate-and-retry path every capability that
+    needs typed output already goes through (CHN-09's classifier, CHN-13's
+    daily summary, CHN-19's weekly narrative -- confirmed by reading all
+    three, not assumed from the module's own docstring claim alone), and
+    it is already covered by `test_retries_on_invalid_then_succeeds`,
+    `test_raises_after_exhausting_attempts_never_defaults`
+    (`tests/unit/test_structured_output.py`), and
+    `test_invalid_label_retries_then_succeeds`
+    (`tests/unit/test_classifier.py`). No new test was added for any of
+    these three -- doing so would duplicate real, already-load-bearing
+    coverage rather than close an actual gap, the same reasoning CHN-24
+    already applied to GC7 vs. the pre-existing mislabelled-ledger test.
+
+The other five had a *rule-level* or *ingestion-level* test each
+(mostly from CHN-08/CHN-24's `test_update_detection_against_fixtures.py`
+and CHN-05/06's `test_ingestion_sync.py`) but no *participation-ledger*
+test at all -- nothing proving `p1.participation.ledger.build_ledger()`
+itself handles them correctly end-to-end, which is what this row's own
+"graceful, non-fabricating outcome" language is actually about. New
+module: `tests/unit/test_participation_edge_cases.py`, five tests, all
+against the real committed CHN-07 fixtures and the real
+`detection.pipeline.classify_and_persist()` -> `build_ledger()` path,
+never a hand-simulated ledger:
+
+  1. **Non-working day** (DIFF-NONWORKING-01, proj-alpha, 2025-06-13,
+     a Friday, not a weekend): `build_ledger` raises `NonWorkingDayError`
+     rather than computing a fabricated non-responder set for a day
+     nobody was asked to respond on -- the existing
+     `test_non_working_day_raises` in `test_participation_ledger.py`
+     only ever exercised a calendar Saturday, never the "configured,
+     not a weekend" distinction the WBS text itself calls out. Also
+     asserts the adjacent 2025-06-12 (an ordinary Thursday) does NOT
+     raise, as a contrast.
+  2. **Deleted-only-update** (DIFF-DEL-01, sara.johansson, proj-alpha,
+     2025-06-03) -- the row's own text names this the scenario "that
+     most easily produces a false accusation." Asserts her day reverts
+     to a genuine `no_message`, never `posted_no_update`.
+  3. **Edited after window close** (DIFF-EDIT-01, priya.sharma,
+     proj-alpha, 2025-06-02) -- asserts she is a contributor (absent
+     from the ledger entirely), proving the edit never disqualifies her
+     on-time post.
+  4. **Similar display names** (DIFF-NAME-01, proj-gamma, 2025-06-10) --
+     olivia.dupree's 09:30 post is in-window and update-shaped
+     (contributor); olivia.dupont, unrelatedly, also posts that day
+     (proj-gamma-0189) but at 11:41, outside the 09:00-11:00 window
+     (`posted_no_update`). Two almost-identically-named people landing
+     in two different, individually correct states on the same day is
+     the concrete proof against fuzzy/display-name-keyed attribution.
+  5. **Departed tenant member** (DIFF-DEPART-01, sofia.almeida,
+     proj-beta) -- posts through 2025-06-04, then nothing; Graph's own
+     `members.json` no longer lists her at all. Asserts 2025-06-09 (a
+     working day she's silent on) still carries a real `no_message`
+     record for her, and asserts the scenario's own precondition (she's
+     on `config.roster` but absent from live membership) directly rather
+     than taking it on faith.
+
+**Non-vacuousness proofs**, one per new test, each backup-mutate-verify-restore:
+  - Non-working day: cleared `proj-alpha.yaml`'s `non_working_dates` ->
+    the test's own precondition assertion failed immediately (it reads
+    the real file, not a hardcoded date).
+  - Deleted-only-update: disabled `ledger.py`'s `is_deleted` guard ->
+    her state flipped from `no_message` to `posted_no_update`, proving
+    this ledger-level check is a second, independent layer behind the
+    rule engine's own `deleted_message` exclusion, not a redundant copy
+    of it -- the same "checked twice, independently" shape CHN-21's
+    nudge-exceptions check already has.
+  - Edited after window: changed `calendar.local_datetime()` to prefer
+    `edited_at` over `posted_at` -> priya.sharma's message then read as
+    posted at 11:20 (past the 11:00 window close), which the shared
+    `local_datetime()` also feeds to `detection.rules.evaluate_message`,
+    so she flipped straight from contributor to a wrongly rule-excluded
+    non-responder -- exactly the regression this planted difficulty
+    exists to catch, and proof the shared calendar module (not two
+    independent copies) is what keeps CHN-08 and CHN-10 agreeing.
+  - Similar names: swapped which of the two olivias the test expects in
+    which state -> the swapped assertion failed, proving the original
+    assertion is sensitive to which specific person posted, not
+    order-independent or accidentally always-true.
+  - Departed tenant member: removed her from `proj-beta.yaml`'s roster
+    (simulating the exact wrong fix -- "sync the roster to live
+    membership") -> she vanished from the ledger's own precondition
+    check entirely, the silent-drop failure mode this test exists to
+    prevent.
+  All five restores confirmed byte-identical to the pre-injection file
+  before moving to the next.
+
+**Alternatives considered**: writing all eight as brand-new tests
+regardless of existing coverage -- rejected, since three would have
+been pure duplication of already-load-bearing tests from CHN-05/06/08/09/
+11/24, adding maintenance surface without adding any new protection.
+Testing the five new scenarios via a hand-built in-memory `ChannelConfig`
+and synthetic messages instead of the real CHN-07 fixtures -- rejected,
+matching this project's standing discipline (see CHN-11, CHN-24, CHN-28):
+a synthetic shortcut proves a model of the pipeline's behaviour, not the
+pipeline itself, and these five planted difficulties already exist,
+hand-verified, in the real fixture set for exactly this purpose.
