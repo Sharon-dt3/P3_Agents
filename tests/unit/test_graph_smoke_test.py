@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 import graph_smoke_test
 
-from p1.adapters.teams_reader import MessagePage, TeamsMessage
+from p1.adapters.teams_reader import DeltaTokenExpiredError, MessagePage, TeamsMessage
 from p1.config.loader import ChannelConfigStore
 
 ALLOWLISTED_CHANNEL_ID = "19:proj-alpha@thread.tacv2"
@@ -60,11 +60,14 @@ def _config_store(tmp_path: Path) -> ChannelConfigStore:
 
 
 class _FakeGraphReader:
-    def __init__(self, access_token, team_id, messages_by_channel=None, error_for=()):
+    def __init__(
+        self, access_token, team_id, messages_by_channel=None, error_for=(), delta_expired_for=(),
+    ):
         self.access_token = access_token
         self.team_id = team_id
         self._messages_by_channel = messages_by_channel or {}
         self._error_for = set(error_for)
+        self._delta_expired_for = set(delta_expired_for)
         self.messages_requested_for: list[str] = []
 
     def list_messages(self, channel_id):
@@ -73,6 +76,11 @@ class _FakeGraphReader:
             request = httpx.Request("GET", "https://graph.microsoft.com/v1.0/teams/t/channels/c/messages/delta")
             response = httpx.Response(403, request=request, text="Forbidden")
             raise httpx.HTTPStatusError("403 Forbidden", request=request, response=response)
+        if channel_id in self._delta_expired_for:
+            # GraphTeamsReader.list_messages() raises this for a bare 410
+            # from Graph -- which happens for some channel_ids Graph can't
+            # resolve at all, not only for a genuinely expired delta token.
+            raise DeltaTokenExpiredError(f"Delta token expired for channel_id={channel_id!r}; caller must resync from scratch.")
         return MessagePage(
             messages=self._messages_by_channel.get(channel_id, []), delta_token="tok-1", has_more=False,
         )
@@ -163,6 +171,43 @@ def test_run_smoke_test_reports_graph_rejection_and_fails_when_nothing_confirms(
     out = capsys.readouterr().out
     assert "Graph rejected this channel_id" in out
     assert "Live Graph connection confirmed" not in out
+
+
+def test_run_smoke_test_treats_delta_token_expired_the_same_as_a_rejection_and_keeps_going(tmp_path, capsys):
+    # GraphTeamsReader.list_messages() raises DeltaTokenExpiredError for a
+    # bare 410 from Graph -- which happens for a channel_id Graph can't
+    # resolve at all (e.g. a mock-fixture id), not only for a genuinely
+    # expired delta token. This must not crash the whole script: it should
+    # be reported like any other rejection, and the next channel_id still
+    # gets tried.
+    config_dir = tmp_path / "channels"
+    config_dir.mkdir()
+    _write_config(config_dir, ALLOWLISTED_CHANNEL_ID)
+    _write_config(config_dir, SECOND_ALLOWLISTED_CHANNEL_ID)
+
+    fake = _FakeGraphReader(
+        "tok",
+        "team-1",
+        messages_by_channel={SECOND_ALLOWLISTED_CHANNEL_ID: []},
+        delta_expired_for=[ALLOWLISTED_CHANNEL_ID],
+    )
+
+    exit_code = graph_smoke_test.run_smoke_test(
+        access_token="tok",
+        team_id="team-1",
+        reader_factory=lambda access_token, team_id: fake,
+        config_store=ChannelConfigStore(config_dir),
+    )
+
+    assert exit_code == 0
+    # config_dir.glob("*.yaml") is sorted by filename (ChannelConfigStore's
+    # own contract), so SECOND (p1-agent-test) sorts before ALLOWLISTED
+    # (proj-alpha) -- matching the exact order the real smoke test run
+    # against the live tenant showed.
+    assert fake.messages_requested_for == [SECOND_ALLOWLISTED_CHANNEL_ID, ALLOWLISTED_CHANNEL_ID]
+    out = capsys.readouterr().out
+    assert "Graph rejected this channel_id" in out
+    assert "Live Graph connection confirmed" in out
 
 
 def test_run_smoke_test_confirms_the_channels_that_work_even_if_another_is_rejected(tmp_path, capsys):

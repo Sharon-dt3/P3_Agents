@@ -54,6 +54,7 @@ load_dotenv()
 
 import httpx
 
+from p1.adapters.teams_reader import DeltaTokenExpiredError
 from p1.adapters.teams_reader_graph import GraphTeamsReader
 from p1.config.loader import ChannelConfigStore
 
@@ -83,7 +84,14 @@ def run_smoke_test(
         print(f"\n{channel_id} is allowlisted -- fetching one page of real messages:")
         try:
             page = reader.list_messages(channel_id)
-        except httpx.HTTPStatusError as exc:
+        except (httpx.HTTPStatusError, DeltaTokenExpiredError) as exc:
+            # Both mean the same thing here: Graph didn't accept this
+            # channel_id on this team. GraphTeamsReader.list_messages()
+            # turns a bare 410 into DeltaTokenExpiredError before checking
+            # for any other error status -- Graph returns 410 (not 404) for
+            # some ids it can't resolve at all, not only for a genuinely
+            # expired delta token, so this script treats the two the same:
+            # reported, and move on to the next channel, never a crash.
             print(f"  Graph rejected this channel_id: {exc}")
             print("  (a mock-fixture id like \"19:proj-alpha@thread.tacv2\" was never a "
                   "real Graph id -- swap in a real one from Teams' \"Get link to channel\" URL)")

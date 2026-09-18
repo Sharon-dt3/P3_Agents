@@ -2899,3 +2899,69 @@ application logic.
 to actually re-run `graph_login.py` (fresh token) and
 `graph_smoke_test.py` (real read) for this to be confirmed live, not
 just theorized from the code.
+
+## 2026-09-19 -- CHN-01's first real live Graph read, confirmed -- and a smoke-test crash fixed along the way
+
+**The milestone.** After this session's earlier permission/scope work
+landed (a fresh token via `scripts/graph_login.py`,
+`ChannelMessage.Read.All` already consented, `Channel.ReadBasic.All`
+no longer needed by anything), `scripts/graph_smoke_test.py` read one
+real page of real Teams messages from `config/channels/p1-agent-test.yaml`'s
+real channel_id
+(`19:ZVl0BYQCKWi4_oXsG_tuu3F4p5HsgQGobGhAMiZD_ro1@thread.tacv2`) against
+the real DigitalT3 tenant. This is CHN-01's own acceptance test finally
+satisfied for real, not against `MockTeamsReader` -- the first
+genuine, live Microsoft Graph read this project has ever made.
+`GraphTeamsReader`, written and unit-tested against a mock since
+CHN-03, has now round-tripped against the real API it was written for.
+
+**A real bug found immediately after, the honest way.** The very next
+channel in the allowlist, `config/channels/proj-alpha.yaml`'s
+mock-fixture id (`19:proj-alpha@thread.tacv2`, never a real Graph id),
+crashed the whole script with an unhandled `DeltaTokenExpiredError`
+traceback instead of being reported and skipped. Root cause:
+`GraphTeamsReader.list_messages()` raises `DeltaTokenExpiredError` for
+*any* bare `410` Graph returns -- which happens for a channel_id Graph
+can't resolve at all, not only for a genuinely expired delta token --
+and this script's own `except` clause only caught
+`httpx.HTTPStatusError`, an oversight from when the two-scope
+`Channel.ReadBasic.All`-dependent version of this script was rewritten
+earlier the same day.
+
+**Fix.** Widened `graph_smoke_test.py`'s per-channel `except` clause to
+catch `(httpx.HTTPStatusError, DeltaTokenExpiredError)` together --
+both mean the same thing here (Graph didn't accept this channel_id),
+so both are reported and the loop continues to the next allowlisted
+channel rather than crashing. Added
+`test_run_smoke_test_treats_delta_token_expired_the_same_as_a_rejection_and_keeps_going`
+to `tests/unit/test_graph_smoke_test.py`, extending `_FakeGraphReader`
+with a `delta_expired_for` seam so this exact failure mode is now
+covered without ever needing a real Graph connection.
+
+**Judgment calls.** None beyond the fix itself -- this was a
+straightforward gap in exception handling, found by a real run against
+the real tenant (not hunted for), not a design tradeoff.
+
+**Non-vacuousness.** N/A in the injected-bug sense -- this bug was
+real and already observed (a genuine unhandled traceback from a live
+run), not something that needed to be synthetically introduced to
+prove the test would catch it. The new test does directly reproduce
+the exact failure (a `DeltaTokenExpiredError` from a mid-list
+channel_id) and asserts the script both reports it and keeps going to
+the next channel, which is what was missing before this fix.
+
+**Verified.** `tests/unit/test_graph_smoke_test.py`: 8 passed (was 6).
+Full suite: 437 passed, 2 skipped. Ruff clean.
+
+**Not done, on purpose.** The two remaining mock-fixture channel_ids
+(`proj-alpha`, `proj-beta`) are still in the allowlist pointed at
+non-Graph ids -- they will keep reporting "Graph rejected this
+channel_id" on every future smoke-test run, which is expected and
+harmless (this script is designed to report a rejection per channel_id
+rather than treat one bad id as fatal), but worth deciding on
+purpose at some point: either replace them with real channel_ids if
+those projects go live on Teams, or drop them from the allowlist if
+they're staying mock-only, so the tenant admin (`Alfred`, or whoever
+eventually audits this app's Graph footprint) doesn't have to wonder
+why real Graph calls are being made against ids that were never real
+in the first place. Flagged, not decided or built here.
