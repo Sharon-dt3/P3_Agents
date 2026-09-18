@@ -19,6 +19,7 @@ def test_run_migrations_creates_expected_tables(tmp_path):
         "channels", "channel_config", "members", "messages", "messages_fts",
         "classifications", "participation", "digests", "proposals",
         "write_log", "audit", "sync_state", "schema_migrations", "nudges",
+        "escalations",
     }
     assert expected.issubset(tables)
 
@@ -34,5 +35,6 @@ def test_run_migrations_is_idempotent(tmp_path):
         "0002_sync_state.sql",
         "0003_channel_config_non_working_dates.sql",
         "0004_nudges.sql",
+        "0005_escalations.sql",
     ]
     assert second_run == []

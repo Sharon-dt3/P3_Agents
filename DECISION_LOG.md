@@ -871,3 +871,103 @@ exercises.
 
 **Alternatives considered**: none -- provisioning a real flow is out of
 scope for this row.
+
+## 2026-09-18 -- CHN-23: escalation has no separate enable flag; it is gated by nudge history
+
+**Decision**: `run_escalation_job` never escalates a member unless
+`NudgeStore.has_ever_been_nudged(channel_id, member_id)` is already True
+for them. There is no `escalation_enabled` field in `ChannelConfig`.
+
+**Context/reasoning**: The row's own acceptance criterion is "nudge
+precedes escalation" (GC7, landing in CHN-24). Rather than adding a
+second config flag that a channel owner would have to remember to also
+turn on, escalation is made strictly downstream of nudging: a channel
+that never sets `nudge_enabled=True` (CHN-21's own default) can never
+produce an escalation either, for anyone, because nobody in it can ever
+satisfy `has_ever_been_nudged`. This makes the ordering guarantee
+mechanical rather than a matter of running jobs in the right sequence
+and hoping nobody reorders them later.
+
+**Alternatives considered**: an `escalation_enabled` boolean alongside
+`nudge_enabled` -- rejected as a second switch that could drift out of
+sync with the first (enabled escalation with nudging off would let
+someone be escalated without ever having been nudged, violating the
+row's own acceptance test) and as unnecessary config surface for a
+guarantee the nudge-history check already gives for free.
+
+## 2026-09-18 -- CHN-23: never the excluded, checked twice independently -- built correctly from the start
+
+**Decision**: `run_escalation_job`'s `_eligible_candidates()` filters
+only the ledger's own `EXCLUDED` state (mirroring `_eligible_non_responders()`
+in CHN-21's `nudge_job.py`), and the real, always-executed exceptions
+check lives separately in the per-member loop, checking
+`config.exceptions` directly before a streak is ever walked for that
+person.
+
+**Context/reasoning**: CHN-21 originally folded both checks into one
+filter function, which made the loop's own "second layer" check
+unreachable dead code -- caught only by a test that handed the job a
+deliberately mislabelled ledger record. CHN-23 reproduces CHN-21's
+final, corrected structure directly rather than repeating the same
+mistake and needing the same fix a second time. The test file makes
+the same distinction CHN-21's own tests do: the real-ledger test
+(`test_excluded_member_is_never_escalated_via_the_real_ledger`) asserts
+the excepted member produces no result at all (she's filtered before
+the loop runs), while the defensive test
+(`test_..._even_if_the_ledger_mislabels_them`) is the only one that
+exercises the loop's own independent check and gets an explicit
+`EXCLUDED_STATUS` result back.
+
+**Alternatives considered**: none -- this is a direct application of
+CHN-21's own documented lesson, not a new design question.
+
+## 2026-09-18 -- CHN-23: the escalation idempotency key is the streak's own start date, not the day evaluated
+
+**Decision**: an escalation's idempotency key is
+`f"{channel_id}:{member_id}:{streak_start_date}"`, where
+`streak_start_date` comes from walking the participation ledger
+backward from the day being evaluated until it hits a day the member
+contributed or was excluded -- not `f"{channel_id}:{member_id}:{date}"`
+(the day the job happens to run on).
+
+**Context/reasoning**: A missed-day streak keeps growing every working
+day a person stays silent past the threshold. Keying on the evaluated
+day would either re-escalate that same continuing streak every single
+day past the threshold (spam, and the opposite of the "wrong once and
+the agent is switched off" risk this whole programme is built around),
+or require a second piece of bookkeeping to suppress repeats. Keying on
+the streak's own start date means the key is stable for exactly as
+long as the streak stays unbroken, and only changes once the person
+actually breaks it (a real contribution) and then misses the threshold
+again -- so `guarded_send()`'s own `ALREADY_SENT` branch is what
+suppresses repeats, the same mechanism CHN-17/18's daily-digest
+idempotency check already relies on, with no new bookkeeping required.
+
+**Alternatives considered**: a per-day cap counter analogous to
+`nudge_cap_per_day` -- rejected because there is no natural "per-day"
+unit for an escalation the way there is for a nudge (a nudge is capped
+at N *sends*/day; an escalation's natural cap is "at most one per
+*streak*", which a counter doesn't express directly and a date-derived
+key does.
+
+## 2026-09-18 -- CHN-23: guarded_send's target is the owner, not the escalated member
+
+**Decision**: `run_escalation_job` calls `guarded_send(..., action_type="escalation",
+target=config.channel_owner_id, ...)` -- the write_log's `target`
+column holds the owner's member_id, not the escalated person's.
+
+**Context/reasoning**: SPN-09's own `write_guard.py` docstring already
+documented this exact call shape (`action_type="escalation"/
+target=owner_id`) before this row was built, alongside nudge's
+`action_type="nudge"/target=member_id`. In both cases `target` means
+"who received the Teams message" -- consistent across the two
+capabilities -- rather than "who the action is about." The escalated
+person's identity is still fully present and queryable: it's the
+`member_id` inside the proposal's own payload, and the escalation's own
+storage row (`escalations.member_id`) is keyed on them directly.
+
+**Alternatives considered**: `target=member_id` (the escalated person),
+for symmetry with "the subject of the action" -- rejected because it
+would contradict `write_guard.py`'s own pre-existing documented
+convention, and because `target`'s established meaning in this
+codebase is already "message recipient," not "message subject."
