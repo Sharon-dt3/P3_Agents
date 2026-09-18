@@ -7,10 +7,13 @@ seed:
 run:
 	uv run python scripts/run_daily.py
 
+walkthrough:
+	uv run python scripts/run_walkthrough.py
+
 test:
 	uv run pytest
 
 lint:
 	uv run ruff check .
 
-.PHONY: install seed run test lint
+.PHONY: install seed run walkthrough test lint

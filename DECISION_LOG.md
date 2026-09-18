@@ -1976,3 +1976,100 @@ version is even compatible with everything else pinned in `uv.lock`
 (cache format, retry classes, etc.), and changing a locked dependency
 version is a larger, riskier surface than removing one now-unsupported
 kwarg from one call site.
+
+## 2026-09-18 -- CHN-32: recording needs a real script, not a checklist of separate commands
+
+**The finding, before building anything**: this row's own Method column
+says "Human + screen recorder" -- the recording itself is not mine to
+make (no screen capture, no live Teams tenant either way). What IS
+mine is making sure every beat the WBS row lists is something a real,
+already-existing production function can actually produce on demand.
+Checking turned up the same class of gap CHN-31 found for the daily
+digest: `run_nudge_job`, `run_escalation_job`, and
+`generate_and_persist_weekly_rollup` are all real, tested functions,
+but none had a standalone entry point -- only eval-case modules ever
+called them, several (GC7/GC8/GC12) against entirely synthetic
+channels built for clean, controlled test conditions, not the real
+`proj-alpha`/`proj-beta` data a "genuine end-to-end run" implies.
+
+**Two decisions asked and answered before writing code** (both stayed
+with the recommended option): the live-permalink beat is narrated
+honestly on camera as a well-formed, non-live URL (Graph consent still
+pending, same disclosed status the README already carries) rather than
+skipped or faked; and the nudge/escalation/weekly-rollup gap is closed
+with one consolidated script, `scripts/run_walkthrough.py`, rather than
+a checklist of separate `pytest -k` invocations.
+
+**Finding real data for the nudge/escalation beats, not synthetic
+data**: rather than reusing GC7's own purpose-built synthetic channel
+(`gc7-channel`, fabricated alice/bob/carol), I queried `build_ledger()`
+directly across proj-beta's entire real fixture window
+(2025-06-02 through 2025-06-13) before writing any walkthrough code.
+`sofia.almeida` (the same person CHN-29's "departed tenant member" test
+already uses) turned out to have a genuine, naturally-occurring
+7-consecutive-working-day silence starting 2025-06-05 -- nothing added
+or adjusted, already sitting in the committed fixtures, and it clears
+proj-beta's own `escalation_threshold_days` (2) on the second day on
+its own. `kenji.tanaka`'s real, near-total "posted, but nothing
+counted" pattern across the same window is what shows the OTHER nudge
+wording. Using the real system's own real data for beats 7 and 8, not
+a fabricated one, keeps the whole recording inside the same two real
+channels beat 1 ingests -- no jarring third "channel" appearing mid-take.
+
+**What `scripts/run_walkthrough.py` actually does**, in the WBS row's
+own order: real production ingestion (`p1.adapters.factory.get_teams_reader()`
++ `p1.ingestion.sync.sync_all_allowlisted_channels()` -- the same
+wiring GC5 proves, not CHN-31's own fixture-loading shortcut) for
+proj-alpha/proj-beta, then explicit direct reads of proj-gamma and two
+synthetic chat ids to show `ScopeViolationError` raised at the
+boundary; a real rule-settled and a real model-settled classification
+outcome printed side by side (2025-06-06, proj-alpha's busiest real
+day); proj-alpha's ledger on 2025-06-05 (excluded/no_message/posted_no_update
+all genuinely present that day); proj-alpha's daily summary with a
+permalink line and the honest live-vs-mock narration cue; proj-beta's
+weekly roll-up (week ending its own configured Thursday, 2025-06-12);
+a first nudge pass on proj-beta (everyone's first-ever nudge held
+pending), one member (`amara.okonkwo`) rejected by hand, sofia's
+approved and resent, then her second consecutive day auto-approving;
+and a real escalation run producing sofia's actual evidence-bundle
+text (both real dates, both `no_message`, the real update window).
+
+**Non-vacuousness (bug injection)**: removed the `proposal_store.reject()`
+call for `amara.okonkwo`'s nudge in the new test's target script,
+reran `tests/unit/test_run_walkthrough.py` -- failed exactly where
+expected (`amara.okonkwo: rejected` never appears), restored
+byte-identical (`diff` confirmed), reran green. Full suite: 397 passed
+(396 + this one new test), 2 skipped; ruff clean.
+
+**Errors and fixes while building the test**: the first `ScriptedGateway`
+draft handled only the classifier's `"classification"` tool name
+(CHN-31's own pattern) and returned empty `{"lines": []}` for
+everything else, which made the weekly roll-up crash --
+`WeeklyNarrativeDraft` requires a `narrative` field, not `lines`;
+fixed by branching on `"weekly_narrative"` too. Once that was fixed,
+the daily-summary permalink assertion still failed, because an empty
+`{"lines": []}` response (valid, but contentless) never produces a
+permalink line to check at all -- fixed by having the fake, for a
+`"daily_summary_section"` request specifically, parse the real
+`message_id` `p1.reporting.facts.render_facts_block` put in the prompt
+and echo it back in a properly grounded line, so the permalink
+rendering path is genuinely exercised rather than silently skipped.
+
+**Not done, on purpose**: the eval-output beat is not called from
+inside `run_walkthrough.py` -- it is `scripts/run_eval.py`, an already
+real, already working command, meant to run as its own step in the
+same recording rather than being wrapped a second time. And a `make`
+target (`make walkthrough`) was added rather than leaving this as a
+bare `uv run` invocation, matching `make run`/`make seed`'s own
+convention.
+
+**Alternatives considered**: reusing GC7/GC8's synthetic channel for
+the nudge/escalation beats -- rejected once querying the real fixture
+window showed a genuine, unforced streak already existed; a synthetic
+channel would have been an easier build but a less honest "genuine
+end-to-end run" than the row's own verify criterion asks for. A
+checklist of separate `pytest -k` commands instead of one script --
+asked about directly and declined in favor of the consolidated script,
+for the same reason CHN-31 built a real entry point instead of leaving
+`make run` a placeholder: a recording is a worse take with more cuts
+and more chances to fumble a command live.

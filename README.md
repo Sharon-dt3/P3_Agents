@@ -104,6 +104,36 @@ capability's version, and every metric's measured/target/pass-fail) to
 just the headline. See `docs/MASTER_IMPLEMENTATION_PLAN.md`'s own
 golden-case table for what each GC actually checks.
 
+## Recorded walkthrough
+
+    make walkthrough   # uv run python scripts/run_walkthrough.py
+
+CHN-32's own real backing script for a 5-10 minute recorded demo:
+ingests both allowlisted channels and explicitly refuses proj-gamma and
+two synthetic chat ids at the scope-gate boundary, prints one real
+rule-settled and one real model-settled update-detection decision,
+renders proj-alpha's participation ledger with all three non-responder
+states present on a real day, generates proj-alpha's daily summary
+(with a real, clickable-shaped permalink -- see the caveat below) and
+proj-beta's weekly roll-up, holds one real nudge pending and rejects
+another, and produces a real escalation evidence bundle -- all against
+the exact same production functions every unit test and golden case
+already exercises, never a second demo-only code path. `tests/unit/test_run_walkthrough.py`
+proves every beat runs against the real fixtures with a scripted
+(never live) gateway. Run `uv run python scripts/run_eval.py` as its
+own next step for the eval-output beat, and close by naming your own
+view of the weakest part -- that's the recording's job, not this
+script's.
+
+**Live-permalink caveat**, same one C2/CHN-22 already name: every
+permalink in this walkthrough (e.g.
+`https://teams.microsoft.com/l/message/19:proj-alpha@thread.tacv2/proj-alpha-0001`)
+is well-formed and traces to a real message in this repo's own store,
+but does not resolve against a live Teams tenant -- CHN-01's Graph
+consent is still pending (see Status above). The script prints an
+explicit on-camera narration cue for this rather than leaving it to be
+discovered mid-recording.
+
 ## AI assistance
 
 Portions of this repository's scaffolding, code, and documentation were written with assistance from Claude (Anthropic), used interactively during development. Every file's purpose is understood and can be explained by the author.
