@@ -183,6 +183,23 @@ class ProposalStore:
             conn.close()
         return _row_to_proposal(row) if row is not None else None
 
+    def list_by_status(self, status: str) -> list[Proposal]:
+        """Every proposal currently in `status`, oldest first -- the one
+        query CHN-25's approval service (and, through it, both the
+        Copilot Studio connector and the Streamlit fallback) uses to
+        list what is awaiting a human decision. Deliberately a plain
+        status filter, not scoped to any one capability's `type`, since
+        a human approving nudges/escalations/first-publishes from one
+        surface is this row's own point."""
+        conn = get_connection(self._db_path)
+        try:
+            rows = conn.execute(
+                "SELECT * FROM proposals WHERE status = ? ORDER BY created_at", (status,)
+            ).fetchall()
+        finally:
+            conn.close()
+        return [_row_to_proposal(row) for row in rows]
+
     def approve(self, proposal_id: str, *, approver_id: str, payload: dict | None = None) -> Proposal:
         """Moves a pending proposal to approved. payload, given only
         when a human edited the model's draft before approving it,

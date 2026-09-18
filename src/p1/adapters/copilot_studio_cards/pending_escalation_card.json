@@ -1,0 +1,28 @@
+{
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "type": "AdaptiveCard",
+  "version": "1.5",
+  "body": [
+    { "type": "TextBlock", "text": "Escalation pending approval", "weight": "Bolder", "size": "Medium" },
+    { "type": "TextBlock", "text": "${summary}", "wrap": true },
+    { "type": "TextBlock", "text": "Channel: ${channel_id}", "isSubtle": true, "spacing": "None" },
+    { "type": "TextBlock", "text": "Created: ${created_at}", "isSubtle": true, "spacing": "None" },
+    {
+      "type": "TextBlock",
+      "text": "The evidence bundle (dates, window, and what was/was not posted) is in the message this will send -- never a bare claim.",
+      "wrap": true, "isSubtle": true
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.Submit",
+      "title": "Approve",
+      "data": { "action": "handle_approve", "proposal_id": "${proposal_id}", "approver_id": "${current_user_id}" }
+    },
+    {
+      "type": "Action.Submit",
+      "title": "Reject",
+      "data": { "action": "handle_reject", "proposal_id": "${proposal_id}", "approver_id": "${current_user_id}" }
+    }
+  ]
+}

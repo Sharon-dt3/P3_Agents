@@ -1,0 +1,20 @@
+{
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "type": "AdaptiveCard",
+  "version": "1.5",
+  "body": [
+    { "type": "TextBlock", "text": "Channel configuration", "weight": "Bolder", "size": "Medium" },
+    { "type": "TextBlock", "text": "Changes here take effect immediately -- no deploy needed.", "isSubtle": true, "wrap": true },
+    { "type": "Input.Text", "id": "roster_csv", "label": "Roster (comma-separated member IDs)", "value": "${roster_csv}" },
+    { "type": "Input.Time", "id": "update_window_start", "label": "Update window start", "value": "${update_window_start}" },
+    { "type": "Input.Time", "id": "update_window_end", "label": "Update window end", "value": "${update_window_end}" },
+    { "type": "Input.Text", "id": "exceptions_csv", "label": "Exceptions (member_id:reason, comma-separated)", "value": "${exceptions_csv}", "isMultiline": true }
+  ],
+  "actions": [
+    {
+      "type": "Action.Submit",
+      "title": "Save",
+      "data": { "action": "handle_update_channel_config", "channel_id": "${channel_id}", "updated_by": "${current_user_id}" }
+    }
+  ]
+}

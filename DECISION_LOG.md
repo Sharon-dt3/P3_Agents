@@ -1120,3 +1120,123 @@ the roster change and one isolating the window change -- considered
 more diagnostic if either ever regresses alone, but rejected for now
 as more eval surface than this row asks for; can be split out later if
 a regression in only one of the two ever needs isolating.
+
+## 2026-09-18 -- CHN-25: Copilot Studio and Dataverse are a documented, tested connector contract, not a live integration
+
+**Decision**: `src/p1/adapters/copilot_studio_connector.py` implements
+the real backend contract a Copilot Studio custom connector's actions
+would call (list/approve/reject/update_channel_config), and
+`src/p1/adapters/copilot_studio_cards/*.json` are real Adaptive Card
+1.5 documents whose `Action.Submit` data is checked against each
+handler's request shape by a test -- but no Copilot Studio bot, no
+Dataverse table, and no live Teams/Entra identity exist anywhere in
+this repo. `docs/copilot_studio/connector_contract.md` states this
+plainly rather than leaving it implied.
+
+**Context/reasoning**: this is CHN-22's own precedent (a real
+`PowerAutomateTeamsPublisher` class, implementing the real HTTP
+contract, never exercised against a live flow) applied to a second
+low-code Microsoft surface, for the same reason: this repo has no
+Microsoft tenant to build or deploy either one into, so the honest and
+useful thing to build is the seam a real integration would bind to,
+proven correct on its own terms, rather than either skipping the row
+or faking a tenant that doesn't exist. Cross-checking each card's
+submitted keys against its handler's actual accepted keys
+(`test_copilot_studio_connector.py`) means this doc/template pair
+cannot silently drift from the code the way a hand-written contract
+doc could -- the same "docs cannot outrun the code" discipline D10
+asks for at the whole-repo level, applied here at the row that
+introduces it.
+
+**Alternatives considered**: skipping the Copilot Studio side entirely
+and building only the Streamlit fallback -- rejected because the row's
+own text asks for the connector contract specifically ("BEST FIT... the
+channel owner who knows the roster lives in Teams"), and because the
+equivalence proof this row's acceptance test asks for is strongest when
+there are genuinely two independent call shapes (a JSON request dict
+vs. Streamlit's own widget values) converging on the same service
+calls, not one surface pretending to be two.
+
+## 2026-09-18 -- CHN-25: approve_and_send()/reject() are the one seam; neither surface is allowed to touch ProposalStore or write_guard directly
+
+**Decision**: `p1.approval.service.approve_and_send()`/`reject()` are
+the only functions either surface (the Copilot Studio connector's
+handlers, or `app/approval_dashboard.py`'s own button callbacks) is
+allowed to call for a HITL decision. Neither surface imports
+`ProposalStore`, `guarded_send`, or `write_guard` itself.
+
+**Context/reasoning**: this is the actual mechanism behind "proving the
+gate lives in the service, not the UI" -- not an assertion about
+design intent, but a structural fact a reviewer can check by grep: if
+neither surface ever imports the lower-level machinery, neither one
+can special-case its own path through it, and the two calling into the
+literal same function is what makes their resulting write_log/audit
+rows the same shape by construction rather than by careful parallel
+maintenance of two copies of the same logic.
+`approve_and_send()` deliberately carries no `surface`/`caller`
+parameter of any kind, for the same reason: a parameter that let a
+caller identify itself would be exactly the seam a future special case
+could be hung off of, even unintentionally.
+
+**Alternatives considered**: a `surface` tag threaded through to the
+audit row, for observability (so a demo could show "approved via
+Teams" vs. "approved via Streamlit") -- rejected because it would make
+the two surfaces' audit rows differ by construction, undermining the
+one thing this row's acceptance test asks to prove; if that
+observability is ever wanted, it belongs in a log line the calling
+surface writes on its own, outside the audited call, never inside it.
+
+## 2026-09-18 -- CHN-25: the config surface only writes roster, the update window, and exceptions -- everything else is still YAML-only
+
+**Decision**: `ChannelConfigStore.update_channel_config()` accepts only
+`roster`, `update_window_start`/`update_window_end`, and `exceptions`.
+Every other `ChannelConfig` field (timezone, digest times,
+`nudge_cap_per_day`, `escalation_threshold_days`, ...) has no write
+path through this function at all, and stays committed-YAML-only,
+changed only by a deploy.
+
+**Context/reasoning**: this row's own text names exactly these three
+fields as what "a channel owner maintains... without a deploy" --
+scoping the write surface to match that list precisely means a channel
+owner cannot accidentally (or via a compromised Copilot Studio card)
+change something like `escalation_threshold_days` or the digest
+schedule from a Teams adaptive card, fields whose blast radius and
+review expectations are different from a roster or a leave list.
+`get_effective_config()` still reads every field from the live DB
+mirror (so a job always sees a consistent whole config), but the write
+side is deliberately the narrower of the two.
+
+**Alternatives considered**: exposing the whole `ChannelConfig` for
+editing -- rejected as broader than this row asks for and a bigger
+surface for an unreviewed change to do damage; can be widened field by
+field later if a specific field earns it, same as any other scope cut
+in this programme.
+
+## 2026-09-18 -- CHN-25: get_effective_config() reads the DB mirror, not the committed YAML, so a live edit needs no deploy
+
+**Decision**: `get_effective_config()` -- the read path
+`approve_and_send()`'s escalation resend and both surfaces' config
+forms use -- queries the `channel_config` table SQLite already
+mirrors YAML into (CHN-02's own `sync_to_db()`), never the YAML files
+`get_channel_config()`/`list_configured_channels()` read.
+
+**Context/reasoning**: CHN-02's own `loader.py` docstring already
+anticipated this split before CHN-25 was built ("Dataverse is added
+later (CHN-25) purely as a human-editable surface on top of this --
+never the source of truth"). Reading the DB, not the files, for the
+live path is what makes "without a deploy" literally true: a process
+that loaded its config from files at start-up would never see a
+Teams-side edit until it restarted. A live-edited channel owner's
+escalation target, specifically, is looked up this way rather than
+from whatever the escalation's own payload snapshot said at creation
+time -- an owner who changes AFTER a streak was flagged but BEFORE a
+human approves it is escalated to the CURRENT owner, not a stale one,
+the same "configuration is really configuration" principle GC12
+already established for the non-responder set.
+
+**Alternatives considered**: baking `channel_owner_id` into the
+escalation's own payload at creation time (as nudge already does with
+`member_id`) and resending to whichever owner that snapshot names --
+rejected once the config surface existed, since it would mean an
+approved-late escalation could go to someone who is no longer the
+channel owner by the time a human approves it.
