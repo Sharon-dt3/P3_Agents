@@ -71,7 +71,7 @@ One row per capability from `docs/MASTER_IMPLEMENTATION_PLAN.md`'s own traceabil
 | C13 | COULD | Cross-channel question answering | **Not built** (not planned) | -- |
 | C14 | COULD | Per-person digest | **Not built** (not planned) | -- |
 
-Two more surfaces sit alongside C1 and C8 but aren't their own numbered capability: the **Copilot Studio approvals/config UI** (CHN-25) is a documented, tested connector contract over the exact same `p1.approval.service` every other surface calls -- `src/p1/adapters/copilot_studio_connector.py`, `docs/copilot_studio/connector_contract.md`, `tests/unit/test_copilot_studio_connector.py` -- but has never run against a live Copilot Studio agent (no environment provisioned); the scored fallback, a real Streamlit app (`app/approval_dashboard.py`, `tests/unit/test_approval_dashboard_app.py`), is what's actually exercised end-to-end. And the **eval harness itself** (SPN-07) is what every GC reference above runs through: `src/p1/eval/cases.py`, `runner.py`, `registrations.py`, driven by `scripts/run_eval.py` -- see Eval results below.
+Two more surfaces sit alongside C1 and C8 but aren't their own numbered capability: the **Copilot Studio approvals/config UI** (CHN-25) is a documented, tested connector contract over the exact same `p1.approval.service` every other surface calls -- `src/p1/adapters/copilot_studio_connector.py`, `docs/copilot_studio/connector_contract.md`, `tests/unit/test_copilot_studio_connector.py` -- plus a real, internet-hostable HTTP API in front of it (`src/p1/api/copilot_studio_api.py`, `tests/unit/test_copilot_studio_api.py` -- see "Copilot Studio custom connector API" below), but no Copilot Studio agent or Dataverse table has actually been created yet (both need a human in the Power Platform maker portal, plus a decision on where the API is hosted so Microsoft's cloud can reach it); the scored fallback, a real Streamlit app (`app/approval_dashboard.py`, `tests/unit/test_approval_dashboard_app.py`), is what's actually exercised end-to-end today. And the **eval harness itself** (SPN-07) is what every GC reference above runs through: `src/p1/eval/cases.py`, `runner.py`, `registrations.py`, driven by `scripts/run_eval.py` -- see Eval results below.
 
 ## Key decisions and scope cuts
 
@@ -86,6 +86,7 @@ Two more surfaces sit alongside C1 and C8 but aren't their own numbered capabili
 - **C13 / C14 (cross-channel question answering; per-person digest).** COULD-priority in the master plan's own capability table, explicitly "not planned" -- no code exists for either.
 - **GC1 recall (update-detection).** Deliberately reported, never gated (target `0.0`), per the master plan's own stated rationale: a missed exclusion is a nuisance, a false "no update" names an innocent person. CHN-28 investigated gating it anyway and rejected that, since it would override this explicit, already-reasoned spec rather than fix a defect in it.
 - **CHN-31 (clean-clone verification).** `scripts/run_daily.py`'s new full-flow demo inserts `members` rows straight from the committed fixture data before ingesting messages, exactly as every golden-case eval module already does (see e.g. `p1.eval.chn24_cases`) -- CHN-05's ingestion orchestrator (`sync_all_allowlisted_channels`) drains messages from a `TeamsReader` but has never had a member-sync capability of its own, mock or Graph. That gap is real and pre-existing, not introduced by this row; a real member-sync path (Graph's own `list_channel_members`, wired into ingestion) is deferred to its own future row rather than built here. Separately: if `ANTHROPIC_API_KEY` is missing, the visible error is an Ollama connection failure, not a plain "no API key" message -- `p1.llm.gateway.LLMGateway`'s own designed degrade-to-Ollama fallback (SPN-02) catches the missing-key error and tries a local Ollama call next, which then fails on its own terms. That is existing, documented gateway behaviour this row surfaced, not changed.
+- **SPN-02 (AWS Bedrock as a third LLM provider).** `LLM_PROVIDER=bedrock` reaches the same Claude model through AWS's own hosted infrastructure instead of Anthropic's API directly, for whoever's model access happens to be provisioned that way -- via the `anthropic` SDK's own `AnthropicBedrock` client (`anthropic[bedrock]`, which pulls in `boto3`/`botocore`), not a separately hand-rolled AWS signing path. `_call_anthropic` and the new `_call_bedrock` share one request/retry/parsing implementation (`_call_messages_api`), proven identical in call shape via `inspect.signature` against the real installed SDK (`tests/unit/test_llm_gateway_bedrock_call_shape.py`), the same discipline CHN-31 established for the direct Anthropic path. Authenticates via an explicit `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`, never AWS's ambient default credential chain. One real, deliberately-kept design consequence worth knowing: a misconfigured Bedrock provider (missing AWS config) raises `LLMGatewayError`, and `generate()`'s existing degrade-to-Ollama path (see the CHN-31 bullet above) catches that the same way it catches an exhausted or misconfigured direct-Anthropic call -- it degrades to Ollama rather than surfacing the AWS config problem loudly. This has never been run against a real AWS account; written and tested entirely against a fake Bedrock client, same "written, tested against a fake, never a real network call under test" status as `GraphTeamsReader` and `PowerAutomateTeamsPublisher`.
 
 ## Eval results
 
@@ -170,6 +171,42 @@ against a fake MSAL app / fake reader (`tests/unit/test_graph_login.py`,
 `tests/unit/test_graph_smoke_test.py`) -- neither has ever made a real
 network call under test, the same discipline as `GraphTeamsReader`
 itself.
+
+## Copilot Studio custom connector API
+
+    make copilot-api   # uv run uvicorn p1.api.copilot_studio_api:app --reload
+
+A real, runnable HTTP API (`src/p1/api/copilot_studio_api.py`) sitting
+in front of CHN-25's already-tested connector handlers
+(`p1.adapters.copilot_studio_connector`) -- the one piece that was
+missing for Copilot Studio to be more than a documented contract: a
+custom connector needs a real URL and a real OpenAPI document to
+import, and nothing in this repo was reachable over HTTP before this.
+Every action endpoint (`/list_pending_approvals`, `/approve`,
+`/reject`, `/update_channel_config`) is a thin wrapper -- no business
+logic of its own -- over the exact same handler functions
+`docs/copilot_studio/connector_contract.md` already documents, so
+approving through this API and approving through the Streamlit
+fallback still produce identical audit records, the same equivalence
+`test_copilot_studio_connector.py` already proves.
+
+Auth is a shared secret: every action endpoint requires the correct
+`X-API-Key` header, checked against `COPILOT_STUDIO_API_KEY` (`.env`).
+This is a deliberate, disclosed scope cut, not a real per-user identity
+check -- there is no live Teams/Entra identity yet for this app to
+bind `approver_id`/`updated_by` to (see `connector_contract.md`'s own
+note on this). If `COPILOT_STUDIO_API_KEY` is unset, the app refuses
+every action request outright (fails closed, never open).
+
+Run it locally, open `http://127.0.0.1:8000/docs` for interactive docs
+or `http://127.0.0.1:8000/openapi.json` for the document a Power
+Platform custom connector imports directly. What this does NOT do:
+create a Copilot Studio agent or a Dataverse table, or expose this API
+anywhere Microsoft's cloud can actually reach it -- both still need a
+human in the Power Platform maker portal with real tenant access, plus
+a hosting decision (this repo runs the API locally; making it
+internet-reachable, e.g. via Azure App Service or a tunnel, is a
+separate, undone step). See `DECISION_LOG.md`'s CHN-25 API entry.
 
 ## AI assistance
 

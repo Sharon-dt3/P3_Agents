@@ -2,7 +2,7 @@
 LLM gateway — the single call site for every model invocation in P1 (SPN-02).
 
 - One entry point: LLMGateway.generate(...)
-- Provider swap by config: LLM_PROVIDER=anthropic|ollama (.env)
+- Provider swap by config: LLM_PROVIDER=anthropic|ollama|bedrock (.env)
 - On-disk cache keyed by a hash of the full request
 - Exponential backoff on rate limits, then an explicit degrade-to-fallback path
 - Every call logged: provider, model, tokens, latency, cache hit, degraded
@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from anthropic import Anthropic, APIStatusError, RateLimitError
+from anthropic import Anthropic, AnthropicBedrock, APIStatusError, RateLimitError
 from dotenv import load_dotenv
 from tenacity import (
     Retrying,
@@ -65,6 +65,10 @@ class LLMGateway:
         anthropic_model: str = DEFAULT_ANTHROPIC_MODEL,
         ollama_base_url: str | None = None,
         ollama_model: str | None = None,
+        bedrock_aws_access_key: str | None = None,
+        bedrock_aws_secret_key: str | None = None,
+        bedrock_aws_region: str | None = None,
+        bedrock_model_id: str | None = None,
         cache_dir: str | Path = "data/cache/llm",
         call_log_path: str | Path = "data/logs/llm_calls.jsonl",
         max_attempts: int = 4,
@@ -74,6 +78,17 @@ class LLMGateway:
         self.anthropic_model = anthropic_model
         self.ollama_base_url = ollama_base_url or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
         self.ollama_model = ollama_model or os.environ.get("OLLAMA_MODEL", "llama3:8b")
+        # AWS Bedrock (SPN-02's third provider): reaches the same Claude
+        # models through AWS-hosted infrastructure instead of Anthropic's
+        # own API. Authenticates via an explicit access key/secret/region,
+        # never AWS's ambient default credential chain (env vars picked up
+        # implicitly, ~/.aws/credentials, an EC2/ECS instance role, etc.)
+        # -- matching every other adapter in this repo: explicit config in,
+        # no implicit environment magic.
+        self.bedrock_aws_access_key = bedrock_aws_access_key or os.environ.get("AWS_ACCESS_KEY_ID")
+        self.bedrock_aws_secret_key = bedrock_aws_secret_key or os.environ.get("AWS_SECRET_ACCESS_KEY")
+        self.bedrock_aws_region = bedrock_aws_region or os.environ.get("AWS_REGION")
+        self.bedrock_model_id = bedrock_model_id or os.environ.get("BEDROCK_MODEL_ID")
         self.max_attempts = max_attempts
 
         self.cache_dir = Path(cache_dir)
@@ -82,6 +97,7 @@ class LLMGateway:
         self.call_log_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._anthropic_client: Anthropic | None = None
+        self._bedrock_client: AnthropicBedrock | None = None
 
     # ---- public entry point ------------------------------------------------
 
@@ -114,7 +130,12 @@ class LLMGateway:
             )
             provider_used = self.provider
         except LLMGatewayError:
-            if self.provider != "anthropic":
+            # Both cloud providers (direct Anthropic API, or the same
+            # models via AWS Bedrock) degrade to the local Ollama
+            # fallback on exhaustion; a request already targeting Ollama,
+            # or an unrecognized provider, has nowhere further to fall
+            # back to and simply re-raises.
+            if self.provider not in ("anthropic", "bedrock"):
                 raise
             logger.warning("Primary provider exhausted; degrading to local Ollama fallback")
             degraded = True
@@ -145,38 +166,103 @@ class LLMGateway:
     def _call_provider(self, provider, prompt, system, max_tokens, temperature, tools, tool_choice):
         if provider == "anthropic":
             return self._call_anthropic(prompt, system, max_tokens, temperature, tools, tool_choice)
+        if provider == "bedrock":
+            return self._call_bedrock(prompt, system, max_tokens, temperature, tools, tool_choice)
         if provider == "ollama":
             return self._call_ollama(prompt, system, max_tokens, temperature)
         raise LLMGatewayError(f"Unknown LLM provider: {provider}")
 
     def _call_anthropic(self, prompt, system, max_tokens, temperature, tools, tool_choice):
-        """`temperature` is accepted here (and still folded into the
-        cache key -- see _cache_key) purely to keep this method's own
-        signature and _call_provider's dispatch uniform across
-        providers; it is deliberately NOT forwarded to Messages.create().
-        CHN-31's clean-clone verification found that the currently
-        locked anthropic SDK (1.5.0 -- see pyproject.toml/uv.lock) has
-        removed temperature/top_p/top_k from Messages.create() entirely
-        (confirmed by reading that SDK's own installed type stubs, not
-        by trial and error): passing it raised a hard TypeError on
-        every real, uncached call, in both a fresh clone and the
-        existing repo -- see DECISION_LOG.md's CHN-31 entry. There is no
-        replacement sampling-control parameter in this SDK version, so
-        explicit temperature=0.0 determinism is no longer enforceable on
-        the Anthropic path; Ollama's own call still honours it (see
-        _call_ollama) since Ollama's API is unaffected.
-        tests/unit/test_llm_gateway_anthropic_call_shape.py guards
-        against this ever regressing silently again -- it asserts every
-        kwarg this method builds is one the actually-installed SDK's
-        own Messages.create signature accepts, without ever making a
-        live call."""
+        """Direct Anthropic API path. See _call_messages_api for the
+        shared request/retry/response-parsing logic (including the
+        temperature SDK-compatibility note from CHN-31, which applies
+        here too) -- this method's only job is constructing the right
+        client and model identifier."""
         if self._anthropic_client is None:
             if not self.anthropic_api_key:
                 raise LLMGatewayError("ANTHROPIC_API_KEY is not set")
             self._anthropic_client = Anthropic(api_key=self.anthropic_api_key)
 
+        return self._call_messages_api(
+            self._anthropic_client, self.anthropic_model, "Anthropic",
+            prompt, system, max_tokens, tools, tool_choice,
+        )
+
+    def _call_bedrock(self, prompt, system, max_tokens, temperature, tools, tool_choice):
+        """AWS Bedrock path (SPN-02's third provider): the same Claude
+        model, reached via AWS-hosted infrastructure instead of
+        Anthropic's own API. Authenticates via an explicit AWS access
+        key/secret/region (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+        AWS_REGION) -- never AWS's ambient default credential chain --
+        matching this repo's existing pattern of explicit config in, no
+        implicit environment magic. The model identifier is an AWS
+        inference-profile ARN (BEDROCK_MODEL_ID), not the plain
+        Anthropic model name _call_anthropic uses.
+
+        See _call_messages_api for the shared request/retry/parsing
+        logic -- verified identical in shape to the direct Anthropic
+        path via inspect.signature in
+        tests/unit/test_llm_gateway_bedrock_call_shape.py, since
+        AnthropicBedrock exposes the exact same
+        anthropic.resources.messages.Messages class as Anthropic (a
+        thin auth-layer swap in the SDK, not a different API shape --
+        confirmed by inspection, not assumed)."""
+        if self._bedrock_client is None:
+            missing = [
+                name
+                for name, value in (
+                    ("AWS_ACCESS_KEY_ID", self.bedrock_aws_access_key),
+                    ("AWS_SECRET_ACCESS_KEY", self.bedrock_aws_secret_key),
+                    ("AWS_REGION", self.bedrock_aws_region),
+                    ("BEDROCK_MODEL_ID", self.bedrock_model_id),
+                )
+                if not value
+            ]
+            if missing:
+                raise LLMGatewayError(
+                    f"Bedrock provider is missing required config: {', '.join(missing)}"
+                )
+            self._bedrock_client = AnthropicBedrock(
+                aws_access_key=self.bedrock_aws_access_key,
+                aws_secret_key=self.bedrock_aws_secret_key,
+                aws_region=self.bedrock_aws_region,
+            )
+
+        return self._call_messages_api(
+            self._bedrock_client, self.bedrock_model_id, "Bedrock",
+            prompt, system, max_tokens, tools, tool_choice,
+        )
+
+    def _call_messages_api(self, client, model, provider_label, prompt, system, max_tokens, tools, tool_choice):
+        """The Messages-API request-building, retry, and
+        response-parsing logic shared by _call_anthropic and
+        _call_bedrock -- both talk to the exact same
+        anthropic.resources.messages.Messages class (AnthropicBedrock is
+        a thin auth-layer swap over the same SDK, not a different
+        client library), so this only needs to exist once.
+
+        `temperature` is deliberately not a parameter here (and never
+        forwarded to Messages.create()) -- CHN-31's clean-clone
+        verification found that the currently locked anthropic SDK
+        (1.5.0 -- see pyproject.toml/uv.lock) has removed
+        temperature/top_p/top_k from Messages.create() entirely
+        (confirmed by reading that SDK's own installed type stubs, not
+        by trial and error): passing it raised a hard TypeError on every
+        real, uncached call, in both a fresh clone and the existing repo
+        -- see DECISION_LOG.md's CHN-31 entry. There is no replacement
+        sampling-control parameter in this SDK version, so explicit
+        temperature=0.0 determinism is no longer enforceable on either
+        the Anthropic or the Bedrock path (both go through this same
+        Messages class); Ollama's own call still honours it (see
+        _call_ollama) since Ollama's API is unaffected.
+        tests/unit/test_llm_gateway_anthropic_call_shape.py and
+        tests/unit/test_llm_gateway_bedrock_call_shape.py both guard
+        against this ever regressing silently again -- each asserts
+        every kwarg this method builds is one the actually-installed
+        SDK's own Messages.create signature accepts, without ever
+        making a live call."""
         kwargs: dict[str, Any] = {
-            "model": self.anthropic_model,
+            "model": model,
             "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": prompt}],
         }
@@ -194,11 +280,11 @@ class LLMGateway:
             reraise=True,
         )
         try:
-            resp = retrying(lambda: self._anthropic_client.messages.create(**kwargs))
+            resp = retrying(lambda: client.messages.create(**kwargs))
         except RateLimitError as exc:
-            raise LLMGatewayError(f"Anthropic rate-limited after {self.max_attempts} attempts") from exc
+            raise LLMGatewayError(f"{provider_label} rate-limited after {self.max_attempts} attempts") from exc
         except APIStatusError as exc:
-            raise LLMGatewayError(f"Anthropic API error: {exc}") from exc
+            raise LLMGatewayError(f"{provider_label} API error: {exc}") from exc
 
         tool_use_blocks = [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
         if tool_use_blocks:
@@ -230,7 +316,12 @@ class LLMGateway:
     # ---- cache ---------------------------------------------------------------
 
     def _cache_key(self, prompt, system, max_tokens, temperature, tools, tool_choice) -> str:
-        model = self.anthropic_model if self.provider == "anthropic" else self.ollama_model
+        if self.provider == "anthropic":
+            model = self.anthropic_model
+        elif self.provider == "bedrock":
+            model = self.bedrock_model_id
+        else:
+            model = self.ollama_model
         payload = json.dumps(
             {
                 "provider": self.provider,

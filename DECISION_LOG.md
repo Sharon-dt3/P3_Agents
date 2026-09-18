@@ -2224,3 +2224,164 @@ delegated permissions via a real signed-in identity ("Option A"), and
 a secret-based flow would silently reintroduce the tenant-wide,
 higher-consent-bar shape ("Option B") that decision deliberately
 avoided.
+
+## 2026-09-18 -- CHN-25 taken further: a real, internet-hostable HTTP API
+
+**Finding.** A tool-doctrine audit (the user checking every row's
+assigned tool against what was actually built) surfaced this as the
+sharpest gap in the whole repo: the doctrine names Copilot Studio +
+Dataverse as the "BEST FIT" for approvals/config, and neither was ever
+built or provisioned -- only a documented, tested connector contract
+existed, callable only in-process from a test or from Streamlit. There
+was no real HTTP surface anywhere in this repo at all, so even with
+tenant access and licensing, there was nothing yet for a Power Platform
+custom connector to actually point at.
+
+**What was built.** `src/p1/api/copilot_studio_api.py`: a FastAPI app
+wrapping `p1.adapters.copilot_studio_connector`'s four existing
+handlers as real HTTP endpoints (`/list_pending_approvals`, `/approve`,
+`/reject`, `/update_channel_config`), plus `/health`. Every endpoint is
+a thin adapter -- request JSON in, the same handler call, response JSON
+out -- no business logic duplicated or reimplemented. `fastapi` and
+`uvicorn` added as dependencies. `tests/unit/test_copilot_studio_api.py`
+drives the whole thing via FastAPI's own `TestClient` (in-process, no
+real socket) -- auth enforcement (fail closed when unconfigured, 401 on
+a wrong/missing key), HTTP status translation for the two real error
+modes the handlers can raise (`ProposalNotFoundError` / unknown
+channel_id -> 404, a bad exceptions payload -> 400), and full
+happy-path round trips through `/approve`, `/reject`, and
+`/update_channel_config` against an isolated (tmp_path, chdir'd)
+database and a fixture channel config, ending in a real
+`publisher.post_direct_message()` call recorded and asserted on.
+
+**Judgment calls, flagged.** (1) Auth is a single shared `X-API-Key`
+secret, not a per-user identity check -- `connector_contract.md`
+already disclosed there is no live Teams/Entra identity for
+`approver_id`/`updated_by` to come from yet, so a shared secret is what
+stands between "anyone with the URL" and "only something holding the
+key" until real identity binding exists; this is a real, named scope
+cut, not represented as more than it is. (2) The app fails CLOSED
+(500, refuses every action) if `COPILOT_STUDIO_API_KEY` is unset,
+rather than failing open -- chosen deliberately over a default/dev key,
+since an approval-granting endpoint with no secret at all would be a
+worse failure mode than one that simply refuses to start serving
+actions. (3) `db_path`/`config_store`/`publisher` are never part of
+this API's wire contract, matching the connector module's own
+documented seam philosophy -- a real caller (Copilot Studio, or a
+test) only ever supplies what `connector_contract.md` documents, never
+implementation details like which database file to use.
+
+**Non-vacuousness (bug injection).** Reverted the fail-closed check to
+fail open (auth only rejected a WRONG key, not a missing configuration)
+and reran the test suite -- `test_action_endpoint_fails_closed_when_no_api_key_is_configured_at_all`
+failed exactly as expected, for the right reason (the request no
+longer stopped at the auth layer at all). Restored (byte-identical via
+a kept backup), reran: passing again. Full suite run with `data/`
+moved aside entirely (a true clean-clone simulation): 422 passed, 2
+skipped. Ruff clean throughout.
+
+**Not done, on purpose.** No Copilot Studio agent, no Dataverse table,
+and no hosting of this API anywhere Microsoft's cloud could actually
+reach it -- all three still require a human with real Power Platform
+access in the tenant's maker portal, and a separate hosting decision
+this row doesn't make (Azure App Service vs. a tunnel vs. something
+else). This row's whole job was removing the "there's no real HTTP
+surface at all" blocker, not completing the remaining, genuinely
+external steps.
+
+**Alternatives considered.** A Flask app instead of FastAPI -- rejected,
+since FastAPI generates a real OpenAPI/Swagger document for free
+(`/openapi.json`), which is exactly the artifact a Power Platform
+custom connector imports to define its actions; hand-writing that
+document for Flask would be redundant, error-prone effort for no
+benefit. Embedding the API directly into the existing Streamlit process
+-- rejected, since Streamlit is not an HTTP API framework and conflating
+the two surfaces would undo the "no surface-specific parameter" design
+this row's own acceptance test already proves.
+
+## 2026-09-18 -- SPN-02 extended: AWS Bedrock as a third LLM provider
+
+**Finding.** The user was provisioned real Claude model access, but via
+AWS Bedrock rather than a direct Anthropic API key -- AWS-style
+credentials (access key ID, secret access key, region, and a Bedrock
+inference-profile ARN identifying the model) rather than a single
+`ANTHROPIC_API_KEY` string. `p1.llm.gateway.LLMGateway` had no branch
+for this at all: `LLM_PROVIDER` only ever recognized `anthropic` and
+`ollama` (see `_call_provider`'s dispatch, pre-existing). Note: the
+credential email the user received had its actual
+`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` values still as unfilled
+template placeholders (`<new access key ID>` etc.) -- flagged to the
+user directly, not something this row's code can route around; only
+`AWS_REGION` and `BEDROCK_MODEL_ID` from that email were real, usable
+values, and both are now in `.env`.
+
+**Build.** Added `_call_bedrock` alongside the existing `_call_anthropic`,
+both now backed by one shared `_call_messages_api` (previously
+`_call_anthropic`'s own body) -- confirmed via `inspect.signature` that
+`anthropic.AnthropicBedrock` exposes the exact same
+`anthropic.resources.messages.Messages` class as the direct `Anthropic`
+client (same signature, byte for byte), so this is a genuine auth-layer
+swap in the same SDK, not a second API shape to maintain. `LLMGateway`
+gained four new constructor params /  env vars:
+`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`/`BEDROCK_MODEL_ID`
+(explicit config in, matching every other adapter in this repo -- never
+AWS's ambient default credential chain). `pyproject.toml`'s
+`anthropic>=1.5.0` became `anthropic[bedrock]>=1.5.0`, which pulled in
+`boto3`/`botocore` (required for AWS SigV4 request signing) -- without
+this extra, a real Bedrock call fails at import time with
+`ModuleNotFoundError: No module named 'botocore'` (confirmed directly:
+this is exactly the error the bug-injection pass below surfaced when
+the missing-config guard was removed and a real `AnthropicBedrock()`
+client got far enough to try signing a request).
+
+**Judgment calls.** (1) `generate()`'s degrade-to-Ollama-on-exhaustion
+path previously only triggered for `provider == "anthropic"`; widened to
+`provider in ("anthropic", "bedrock")` so either cloud provider falls
+back to the same local Ollama path on failure. This is a real behavior
+change, not just new code alongside old -- both a real bug-injection
+target and now covered by `tests/unit/test_llm_gateway_degrade.py`,
+which previously didn't exist for *either* provider (the anthropic
+degrade path had no direct test before this row; adding it once, for
+both, closes a real pre-existing gap rather than leaving it
+half-covered). (2) A consequence of that same widening, deliberately
+kept rather than special-cased: a misconfigured Bedrock provider
+(missing AWS config) raises `LLMGatewayError` from `_call_bedrock`,
+which `generate()`'s degrade path then catches the same way it catches
+an exhausted real call -- it silently degrades to Ollama instead of
+surfacing the AWS config problem loudly. This mirrors the exact,
+already-documented behavior CHN-31 found for a missing
+`ANTHROPIC_API_KEY` (see that entry and the README's CHN-31 bullet) --
+kept consistent across both providers rather than giving Bedrock a
+different, special-cased failure mode. `test_missing_aws_config_raises_before_touching_the_network`
+therefore calls `_call_bedrock` directly, not `generate()`, to test the
+guard in isolation from the degrade path that would otherwise mask it.
+
+**Non-vacuousness (bug injection).** Two separate injections, both
+reverted from the same before/after backup file: (a) removed the
+missing-AWS-config guard entirely -- `test_missing_aws_config_raises_before_touching_the_network`
+failed as expected, and failed with the real, literal
+`ModuleNotFoundError: No module named 'botocore'` before the
+`anthropic[bedrock]` extra was added (confirming the guard's absence
+really would have let a broken client construction through, not just
+skipped a check that never mattered); (b) reverted the degrade
+condition back to `!= "anthropic"` -- `test_bedrock_degrades_to_ollama_on_exhaustion`
+failed as expected. Restored byte-identical, reran: both pass. Full
+suite: 431 passed, 2 skipped, ruff clean. Clean-clone simulation
+(`data/` moved aside entirely, then restored): 431 passed both times,
+identical to the repo's normal state.
+
+**Not done, on purpose.** No real Bedrock call has ever been made --
+same "written, tested against a fake, never a real network call under
+test" status as every other adapter in this repo. The user's actual
+AWS access key ID and secret access key are still placeholders in the
+credential email she received; nothing here can be exercised against a
+real AWS account until she obtains the real values (flagged to her
+directly) and pastes them into `.env`'s `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`.
+
+**Alternatives considered.** Hand-rolling AWS SigV4 request signing
+directly (e.g. with `httpx` + a manual signer, matching `_call_ollama`'s
+own plain-`httpx` style) -- rejected, since `anthropic`'s own
+`AnthropicBedrock` client already does this correctly, is the
+officially supported path, and sharing `_call_messages_api` with the
+direct-Anthropic path means the request-building/retry/parsing logic
+genuinely only has to be correct once, not maintained twice.

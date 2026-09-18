@@ -10,10 +10,13 @@ run:
 walkthrough:
 	uv run python scripts/run_walkthrough.py
 
+copilot-api:
+	uv run uvicorn p1.api.copilot_studio_api:app --reload
+
 test:
 	uv run pytest
 
 lint:
 	uv run ruff check .
 
-.PHONY: install seed run walkthrough test lint
+.PHONY: install seed run walkthrough copilot-api test lint
