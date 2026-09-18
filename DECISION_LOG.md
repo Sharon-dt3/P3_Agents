@@ -1240,3 +1240,109 @@ escalation's own payload at creation time (as nudge already does with
 rejected once the config surface existed, since it would mean an
 approved-late escalation could go to someone who is no longer the
 channel owner by the time a human approves it.
+
+## 2026-09-18 -- CHN-26: the outcome record reuses CHN-13's own grounded facts, never a second independent read of the classification pipeline
+
+**Decision**: `build_outcome_record()` takes the exact
+`DailySummaryResult` `generate_daily_summary()` already produces --
+the same grounded, retry-verified lines the Teams digest itself is
+rendered from -- and serializes it into the published contract shape.
+It does not call `gather_daily_facts()`, `build_ledger()`, or anything
+else in the classification/participation pipeline a second time.
+
+**Context/reasoning**: the master plan's own note on this row says the
+record should carry "approved and classified items only." In this
+codebase, the bar a fact must clear to be trustworthy enough to show a
+human is SPN-06's grounding kernel (a resolvable `message_id`, and a
+verbatim quote when one is claimed) -- a line that failed that check
+never reaches `DailySummaryResult.section_lines` at all, it lands in
+`dropped` instead. Reusing that same, already-verified result means the
+outcome record can never be MORE permissive than what the digest itself
+would show; a second, independent re-classification pass would risk
+drifting from that bar, or duplicating the same model calls for no
+reason.
+
+**Alternatives considered**: computing the record straight from
+`gather_daily_facts()` (skipping grounding entirely, since the record
+carries `message_id`+`quote` provenance a human could check
+independently anyway) -- rejected because it would mean a fact that a
+human reviewing the digest would never see (because grounding dropped
+it) could still reach P2 through this second channel, which is
+precisely the kind of two-tier trust gap this whole codebase's
+"grounding kernel as a load-bearing layer" design otherwise avoids
+everywhere else.
+
+## 2026-09-18 -- CHN-26: the record is not gated on the day's digest publish approval
+
+**Decision**: `build_outcome_record()`/`write_outcome()` have no
+dependency on CHN-17's own digest publish proposal or its approval
+status. A channel's first-ever digest sitting `AWAITING_APPROVAL`, or a
+digest a human actively rejected, does not block or skip that day's
+outcome record.
+
+**Context/reasoning**: the master plan's "approved... items only" note
+is read here as being about which FACTS are trustworthy enough to
+include (see the entry above), not as "only emit a record for a day
+whose Teams post a human happened to approve." Coupling P2's entire
+data feed to a decision about whether THIS channel gets a Teams
+announcement today conflates two unrelated approvals -- "should this go
+out as a Teams message" and "did anything happen in this channel
+today" -- and would leave P2's morning brief blind on exactly the
+channels a human is most likely to review carefully before approving
+(new channels, on their first-ever publish). This is a judgment call
+made without an explicit answer from the WBS row itself; flagged here
+so it is easy to revisit if the intent was actually the stricter
+reading.
+
+**Alternatives considered**: gating `write_outcome()` on
+`ProposalStore` showing that day's `daily_digest_publish` proposal as
+`applied` -- rejected for the reason above; can be added later as an
+opt-in flag if P2's own design ends up wanting it.
+
+## 2026-09-18 -- CHN-26: the published schema is generated from the pydantic model, checked for drift by a test
+
+**Decision**: `schema/outcome_record.v1.schema.json` is produced by
+`scripts/generate_outcome_schema.py` from
+`p1.contracts.outcome_record.OutcomeRecord.model_json_schema()`, never
+hand-written, and `tests/unit/test_outcome_record_schema.py` fails if
+regenerating it right now would produce something different from the
+checked-in file.
+
+**Context/reasoning**: the same "docs cannot outrun the code"
+discipline CHN-25 applied to its adaptive card templates, applied here
+to what this row calls out explicitly as "a published JSON schema" --
+a hand-maintained schema doc could silently drift the moment a field
+is added to `OutcomeRecord` without the schema file being regenerated;
+a test that diffs the two makes that impossible to miss in review.
+
+**Alternatives considered**: writing the JSON Schema by hand for
+tighter control over its wording -- rejected, since pydantic's own
+generation is both correct and automatically current, and the
+row's emphasis ("published JSON schema") is about consumers having a
+schema to validate against, not about hand-crafted prose in the schema
+itself (the human-readable explanation lives in
+`docs/outcome_record_contract.md` instead).
+
+## 2026-09-18 -- CHN-26: emitting a record is a plain file overwrite, not a proposal -- nothing here goes through SPN-08/09
+
+**Decision**: `write_outcome()` writes (or overwrites) a JSON file
+directly. It creates no `Proposal`, calls no `guarded_send()`, and
+writes no `write_log`/`audit` row.
+
+**Context/reasoning**: SPN-08/09's proposal-and-write-guard machinery
+exists for actions that SEND something to a person -- a channel post, a
+DM. Writing a data file to this repo's own `outcomes/` directory sends
+nothing to anyone; there is no send to gate, no human decision to
+record, and no failure mode ("sent to the wrong person," "sent twice")
+that machinery protects against here. Regenerating a day's record is
+exactly as safe to call repeatedly as regenerating that day's digest
+CONTENT already is (CHN-13's own idempotency key, `{channel_id}:
+{date}:daily`) -- the analogy is to that content-generation step, never
+to the separate publish-approval step layered on top of it.
+
+**Alternatives considered**: routing `write_outcome()` through a
+`Proposal` anyway, for a uniform "everything this system produces is
+an approvable proposal" story -- rejected as adding approval-gate
+ceremony around an action that has no recipient and nothing to refuse,
+and because it would blur SPN-08's own scope (outbound actions) with a
+plain internal data artifact.
