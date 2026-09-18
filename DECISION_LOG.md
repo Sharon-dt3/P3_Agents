@@ -971,3 +971,152 @@ for symmetry with "the subject of the action" -- rejected because it
 would contradict `write_guard.py`'s own pre-existing documented
 convention, and because `target`'s established meaning in this
 codebase is already "message recipient," not "message subject."
+
+## 2026-09-18 -- CHN-24: GC7 runs the real jobs end-to-end, with deliberate reruns, and recomputes every fact from the raw tables
+
+**Decision**: GC7's fixture calls `run_nudge_job()` and `run_escalation_job()`
+directly -- the real production functions, never a hand-simulated
+shortcut -- and calls each one 3 times per day (simulating a scheduler
+that reruns), approving proposals in between exactly as a human would.
+`_measure_gc7()` then queries the `nudges` and `escalations` tables
+directly with raw SQL rather than trusting either job function's own
+return value.
+
+**Context/reasoning**: calling the cap check and the cap-holds metric
+the same number of times a real scheduler rerun would is what makes
+"the cap holds" a claim about the *system*, not about a single
+in-memory call -- a job that happened to be cap-safe on one call but
+not on a rerun would pass a single-call test and still be broken in
+production. Likewise, recomputing bob's per-day sent counts, carol's
+nudge-row count, and the nudge/escalation ordering directly from
+`nudges`/`escalations` rather than from `NudgeResult`/`EscalationResult`
+objects means a bug that corrupted the job's own return value but not
+its writes (or vice versa) can't hide behind a metric that only ever
+asked the job to grade its own homework -- the same "independent
+recomputation" posture GC9 and GC11 already established for the
+narrative/weekly-rollup golden cases.
+
+**Alternatives considered**: hand-building the nudge/escalation rows a
+scenario would produce, without calling the real jobs -- rejected
+because it would protect a model of the jobs' behaviour rather than the
+jobs themselves, and would not have caught the fixture-completeness bug
+this row's own build surfaced (see the entry below).
+
+## 2026-09-18 -- CHN-24: a fixture with no message history before the test window corrupts a streak's computed start date
+
+**Decision**: every GC7/escalation fixture that relies on a specific
+`streak_start_date` seeds a real "anchor" contribution for the relevant
+member on the last working day immediately before the test window,
+not just on the days the scenario is actually about.
+
+**Context/reasoning**: `_streak_dates_ending_at()`'s backward walk is
+deliberately unbounded except for a generous safety cap
+(`_MAX_STREAK_LOOKBACK_CALENDAR_DAYS`), so it is *correct* to keep
+walking backward through any day with no ledger record for that
+member. An empty fixture has no ledger record for any day before the
+seeded window, so that walk finds "missed days" stretching back to the
+safety cap instead of stopping at a real contribution -- corrupting the
+computed streak start and, with it, every idempotency key derived from
+it. This bit CHN-23's own tests first (fixed by anchoring dave and
+bob), and recurred while building GC7 here: the fixture anchored
+alice's history but not bob's, so bob -- who never posts at all in this
+scenario -- got a phantom streak start far earlier than `GC7_MON`,
+and `proposal_store.get_by_idempotency_key(f"...:bob:{GC7_MON...}")`
+came back `None`. Fixed the same way: an anchor contribution for bob on
+`GC7_FRI_PREV`.
+
+**Alternatives considered**: bounding the walk to a short, fixed
+lookback instead of a real backward search -- rejected in CHN-23
+already, since it would either miscount a streak longer than the bound
+or require a second mechanism to detect "streak longer than we can
+see"; the anchor-fixture discipline is the cheaper fix and now applies
+project-wide to any fixture exercising this code path.
+
+## 2026-09-18 -- CHN-24: GC7-excluded-never-nudged proves the real-ledger outcome; the mislabelled-ledger unit test proves the defensive layer
+
+**Decision**: GC7-excluded-never-nudged runs carol (permanently on the
+exceptions list) through the real, non-mislabelled ledger and asserts
+she has zero nudge rows of any kind across all three days. It does not
+attempt to prove, by itself, that `run_nudge_job`'s own second,
+independent `config.exceptions` check (the per-member loop's
+"checked twice, independently" guarantee, see `nudge_job.py`'s module
+docstring) is load-bearing.
+
+**Context/reasoning**: confirmed by deliberate bug injection -- disabling
+that second check in a sandboxed copy of `nudge_job.py` and rerunning
+the eval left this metric passing unchanged, because
+`_eligible_non_responders()`'s first-layer filter already removes
+carol's EXCLUDED-state record before the per-member loop ever runs for
+her in a real (non-mislabelled) ledger. This is not a flaw in GC7: it is
+the same structural fact CHN-23 already documented for its own
+excluded-member escalation test, and `nudge_job.py`'s own docstring
+already anticipates it -- the second layer is "exercised by a test that
+hands this job a deliberately mislabelled record to prove it, not a
+copy of the first filter that would just agree with it every time,"
+which is exactly what CHN-21/22's existing unit test
+`test_on_leave_member_is_never_nudged_even_if_the_ledger_mislabels_them`
+does. Golden cases and unit tests are doing two different jobs here:
+GC7 protects the production-path acceptance criterion ("excluded
+members are never nudged, full stop"), and the mislabelled-ledger unit
+test protects the specific defensive code path that criterion doesn't
+otherwise exercise.
+
+**Alternatives considered**: extending GC7 to also hand the escalation
+job a deliberately mislabelled ledger record, so one golden case proves
+both layers -- rejected as redundant with the existing unit test, and
+because mislabelling the ledger inside a golden case fixture would mean
+GC7 no longer runs the real, trustworthy production path end-to-end for
+its other two assertions (cap-holds, nudge-precedes-escalation).
+
+## 2026-09-18 -- CHN-24: GC8 calls guarded_send() directly, and its send_fn raises rather than returning a sentinel
+
+**Decision**: GC8's six checks create each proposal directly via
+`ProposalStore.create()` and call `guarded_send()` directly -- never
+through `run_nudge_job`/`run_escalation_job`/`run_daily_digest_job` --
+with a `send_fn` that raises `AssertionError` if it is ever actually
+invoked, rather than returning a value GC8 would then have to notice
+was wrong.
+
+**Context/reasoning**: calling `guarded_send()` directly, against the
+service layer, is what this row's own text asks for -- proving refusal is
+enforced at the one seam every write path shares, rather than
+re-proving it separately inside each job's own tests. Making the
+`send_fn` raise on invocation means a regression that let a pending or
+rejected proposal's send through would not quietly show up as a
+metric reading `False` next to a `True` target -- it would blow up the
+eval run itself with an uncaught `AssertionError`, which is a strictly
+louder and harder-to-miss failure mode than a silently wrong PASS/FAIL
+line.
+
+**Alternatives considered**: a `send_fn` that records whether it was
+called and returns normally, with GC8 asserting the flag stayed
+`False` -- rejected because it depends on GC8's own assertion being
+correct to catch a regression, the same single point of failure the
+raise-on-call approach removes entirely.
+
+## 2026-09-18 -- CHN-24: GC12 changes both the roster and the window in one before/after comparison
+
+**Decision**: GC12 reclassifies the exact same day's messages under
+two different `ChannelConfig`s that differ in both `roster` (adds
+carol) and `update_window_end` (narrows from 11:00 to 10:00) in a
+single before/after comparison, rather than isolating one variable at
+a time across two separate cases.
+
+**Context/reasoning**: this row's own acceptance text asks to "change
+the roster and the window" together, and the point of GC12 is to prove
+the non-responder set is genuinely config-driven rather than
+hard-coded anywhere -- a single combined comparison demonstrates both
+facts move independently in one measurement (bob's state changes
+because of the window; carol's presence changes because of the
+roster) without doubling the number of golden cases. This only works
+because `ClassificationStore.record()` upserts on `message_id`: the
+same `TeamsMessage` objects can be reclassified under config B without
+needing a second message fixture, so "same day's data, two configs" is
+a literal re-run against the same rows, not two parallel fixtures that
+could quietly drift apart.
+
+**Alternatives considered**: two separate golden cases, one isolating
+the roster change and one isolating the window change -- considered
+more diagnostic if either ever regresses alone, but rejected for now
+as more eval surface than this row asks for; can be split out later if
+a regression in only one of the two ever needs isolating.
