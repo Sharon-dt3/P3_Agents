@@ -1,7 +1,12 @@
 """Seed command entry point.
 
-Currently: builds a fresh SQLite database from the committed migrations
-(SPN-04). Fixture data itself lands in CHN-06/CHN-07.
+Builds a fresh SQLite database from the committed migrations (SPN-04).
+The actual seed fixture data (3 channels, 10 working days, planted
+difficulties from source sheet 06 plus CHN-28's additions) is not
+regenerated here -- it's deterministic (seed=42) and already committed
+under seed/fixtures/, produced once by
+`uv run python scripts/generate_seed_fixtures.py`. Re-run that script only
+if the fixture generator itself changes.
 """
 
 import logging
@@ -20,7 +25,10 @@ logging.basicConfig(level="INFO")
 
 def main() -> None:
     init_db()
-    print("[seed] Database initialised from migrations. Fixture data not yet implemented -- see CHN-06/CHN-07.")
+    print(
+        "[seed] Database initialised from migrations. Fixture data is committed "
+        "under seed/fixtures/ (see scripts/generate_seed_fixtures.py)."
+    )
 
 
 if __name__ == "__main__":

@@ -1651,3 +1651,92 @@ matching this project's standing discipline (see CHN-11, CHN-24, CHN-28):
 a synthetic shortcut proves a model of the pipeline's behaviour, not the
 pipeline itself, and these five planted difficulties already exist,
 hand-verified, in the real fixture set for exactly this purpose.
+
+## 2026-09-18 -- CHN-30: the status table is one row per traceability-table capability, verified by opening the file
+
+**Decision**: README.md's new "## Status" table has exactly one row per
+`docs/MASTER_IMPLEMENTATION_PLAN.md`'s own C1-C14 capability list (its
+"Cap" traceability table), not one row per WBS task -- a WBS task
+(CHN-17, CHN-22, ...) is an increment of *work*; a capability is the
+unit the row's own DoD asks to verify ("every row in the status table
+is verifiable by opening the named file"), and it's also the unit P2
+and P3's own traceability tables will eventually reference back into
+this one. Two supporting surfaces (the Copilot Studio UI, the eval
+harness itself) don't map to any single numbered capability and are
+called out in a short paragraph under the table instead of forced into
+a row of their own.
+
+**Context/reasoning**: every "Verify" cell was checked by actually
+opening the named file on this machine before being written down, not
+assumed from memory of having built it -- the same discipline CHN-28
+already applied to "is this rule actually exercised" and CHN-29 applied
+to "does this scenario already have a real test." One correction came
+out of that check: the Graph-mode config flip is `TEAMS_READER_MODE=graph`
+(`src/p1/adapters/factory.py`), not the `P1_TEAMS_READER` name first
+drafted from memory -- caught and fixed before committing.
+
+Three real, honest caveats came out of the same file-by-file check,
+each recorded as a caveat rather than silently rounded up to "Done":
+  - **C2** (Graph ingestion) and the write-side equivalent
+    (`PowerAutomateTeamsPublisher`, under CHN-22 in Key decisions) are
+    both fully written and unit-tested against a mocked transport, but
+    neither has ever run against a real Microsoft endpoint -- CHN-01's
+    admin consent is still pending, and no Power Automate flow has been
+    provisioned. Marked **Partial** (C2) and called out explicitly
+    (CHN-22), not folded into a blanket "Done."
+  - **C4**'s GC1 still has zero rule-level ground truth for
+    `non_working_day` specifically -- CHN-28 closed 3 of the 4
+    previously-uncovered rules and deliberately left this one for
+    CHN-29, and CHN-29 then proved the *ledger-level* refusal
+    (`NonWorkingDayError`) rather than the *rule-level* classification.
+    Both are real and correct, but they're not the same proof, and the
+    Status table says exactly that rather than letting "Done" imply
+    GC1 itself now covers all 8 rules.
+  - **C7** (scheduled publishing) is fully built and tested
+    (`run_daily_digest_job`, `build_scheduler`, GC6) but `make run` still
+    prints a placeholder -- nobody has wired a standalone long-running
+    process. This is real, undone work, not a documentation gap, so it's
+    named as such rather than the Makefile being quietly left to imply
+    otherwise.
+
+`scripts/seed.py` and `scripts/run_daily.py` had their own docstrings and
+print statements corrected to match reality (`seed.py` claimed "Fixture
+data not yet implemented" when `seed/fixtures/` has held real, committed
+fixture data since CHN-06/07; `run_daily.py` claimed "No daily job yet"
+when CHN-17/18 built and proved one). Actually wiring `make run` into a
+real standalone scheduler process was considered and rejected for this
+row -- that's new capability-building work, not documentation, and this
+row's own Method column ("Claude Code (drafted from the repo)") and
+"Repo hygiene" bucket are about writing docs from the code that already
+exists, not writing more code to make the docs true.
+
+The **CHN-07 rework** flagged as still-open in
+`docs/MASTER_IMPLEMENTATION_PLAN.md`'s §0 (written 2026-09-17, before
+CHN-08 onward existed) was checked against the actual commit history and
+found already resolved: the 2026-09-17 DECISION_LOG entry
+"CHN-07: sheet 06's 15 planted difficulties are authoritative, not
+'twenty'" shows the rebuild to source sheet 06's 15 categories already
+happened. The master plan file itself is treated as a frozen, dated
+planning snapshot (per its own header, "Status as of 2026-09-17") and
+was not edited -- README.md's Status section is the current,
+code-verified picture instead, and now says so explicitly rather than
+silently repeating the master plan's stale flag.
+
+**Scope cuts, collected**: the "Key decisions and scope cuts" section
+in README.md is a synthesis, not new reasoning -- every item there
+(CHN-01, CHN-07, CHN-17, CHN-22, CHN-25, C13/C14, GC1 recall) already
+had its own full decision recorded earlier in this file; CHN-30's job
+was to find all of them (checked every `## ` heading in this file
+against the WBS row list, not just the ones remembered) and put a
+one-line pointer to each in one place a reader doesn't have to search
+1600+ lines for.
+
+**Alternatives considered**: a WBS-task-level status table (CHN-01
+through CHN-29, one row each) matching section 1's own style in
+`docs/MASTER_IMPLEMENTATION_PLAN.md` -- rejected as the primary table,
+since the row's own DoD frames verification in terms of capabilities,
+and a 29-row task table would mostly restate what DECISION_LOG.md's own
+per-row entries already say in more detail; kept the WBS framing out of
+the *table* but folded task IDs into the Verify column and the scope-cuts
+section instead, so both views are still recoverable from this one
+document.
