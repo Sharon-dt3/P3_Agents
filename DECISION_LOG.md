@@ -774,3 +774,100 @@ Alternatives considered: pre-approving a fresh channel's first-day proposal dire
 **Decision:** `_render_nudge_message()` returns one of two fixed, deterministic strings (selected by ledger state: `NO_MESSAGE` vs. `POSTED_NO_UPDATE`), with only the channel's display name interpolated. There is no `p1.llm`/`p1.prompts` import anywhere in `p1.nudges`.
 
 **Context/reasoning:** This row's own technology line is explicit: "Python (cap and eligibility) + Power Automate (delivery)" -- no model is named, unlike CHN-13/19's own rows which explicitly call out Claude for prose generation. A nudge is a short, low-stakes, structurally repetitive message where a template already says everything needed; introducing a model call here would add cost, latency and a retry/validation surface for a capability whose whole point is to be quick, polite, and predictable.
+
+## 2026-09-18 -- CHN-22: TeamsPublisher is a separate interface from TeamsReader
+
+**Decision**: The write path (`TeamsPublisher`, with `post_channel_message`
+and `post_direct_message`) is its own ABC in its own module, not a method
+added to `TeamsReader` (CHN-03).
+
+**Context/reasoning**: `teams_reader.py`'s own docstring already said "a
+read credential behind this interface must never be able to post" before
+this row existed. That guarantee has to be visible in the code shape
+itself, not just in whichever Graph application permission happens to be
+granted at deploy time -- a single merged interface would make it trivial
+for a future capability to call `reader.post_message(...)` by accident,
+because nothing in the type signature would stop it.
+
+**Alternatives considered**: adding `post_channel_message`/
+`post_direct_message` directly to `TeamsReader` and leaving it to callers
+to only use them with a publish-scoped credential -- rejected because it
+puts the permissions boundary entirely on programmer discipline rather
+than on the interface.
+
+## 2026-09-18 -- CHN-22: the mock is named LogPublisher, not MockTeamsPublisher
+
+**Decision**: The mock implementation of `TeamsPublisher` is named
+`LogPublisher`.
+
+**Context/reasoning**: `docs/MASTER_IMPLEMENTATION_PLAN.md` (Section 9's
+adapter table and Appendix H, both) already name this class `LogPublisher`,
+ahead of it actually being built. Matching the plan's own naming keeps the
+codebase and the documentation in sync, rather than introducing a
+differently-named class (`MockTeamsPublisher`, matching `MockTeamsReader`'s
+naming pattern) that a reader of the plan would then have to reconcile by
+hand.
+
+**Alternatives considered**: `MockTeamsPublisher`, for symmetry with
+`MockTeamsReader` -- rejected once the master plan's own naming was found,
+since the plan is the authoritative source for cross-cutting names like
+this one.
+
+## 2026-09-18 -- CHN-22: get_teams_publisher() has no scope-gate wrapper
+
+**Decision**: `factory.get_teams_publisher()` returns a bare `TeamsPublisher`
+implementation, with no equivalent of `get_teams_reader()`'s
+`ScopedTeamsReader` wrapper.
+
+**Context/reasoning**: `ScopedTeamsReader` exists to restrict WHICH channels
+a reader may even see -- a read-side concern with no natural write-side
+analogue. Every write this programme ever makes already goes through
+SPN-09's `guarded_send()` first, at the call site, which refuses anything
+whose proposal isn't `APPROVED`. An adapter-level gate here would duplicate
+that check, not add a new guarantee, and would create two places a future
+capability's write path would need to satisfy instead of one.
+
+**Alternatives considered**: a `ScopedTeamsPublisher` wrapper restricting
+which channels/members a given publisher instance may target -- rejected
+as redundant with `guarded_send()`'s own target-aware logging and refusal,
+and as a second source of truth that could drift from it.
+
+## 2026-09-18 -- CHN-22: post_direct_message rename (correction to CHN-21)
+
+**Decision**: `nudge_job.py`'s `send_fn()` and `_RecordingPublisher` in
+`test_nudge_job.py` (both from CHN-21) call/implement `post_direct_message`,
+not `send_direct_message`.
+
+**Context/reasoning**: CHN-21 was built before CHN-22's interface existed,
+using an ad-hoc method name (`send_direct_message`) since there was no
+canonical `TeamsPublisher` to conform to yet. Researching CHN-22 against
+`docs/MASTER_IMPLEMENTATION_PLAN.md` surfaced `post_direct_message` as the
+plan's own canonical name. Rather than let CHN-21's call site and CHN-22's
+interface disagree, CHN-21's two affected files were corrected in place as
+part of this row's delivery -- a rename only, no behavior change, and all
+of CHN-21's own tests were re-verified passing unchanged under the new
+name.
+
+**Alternatives considered**: giving `TeamsPublisher` a `send_direct_message`
+method instead, to avoid touching already-committed CHN-21 files --
+rejected because `post_direct_message` is what the master plan itself
+names, and the WBS row for CHN-22 states it explicitly.
+
+## 2026-09-18 -- CHN-22: PowerAutomateTeamsPublisher is not yet exercised against a live flow
+
+**Decision**: `PowerAutomateTeamsPublisher` is written and unit-tested
+against a mocked HTTP transport, but has never been run against a real
+Power Automate flow.
+
+**Context/reasoning**: No Power Automate flow has been provisioned yet --
+the same status `GraphTeamsReader` already carries for CHN-01/CHN-03's read
+side. The class is written against the documented shape of an
+HTTP-triggered flow (one POST URL, one JSON body distinguished by
+`action_type`) so it is ready to wire in once a flow exists, by setting
+`POWER_AUTOMATE_FLOW_URL` and `TEAMS_PUBLISHER_MODE=power_automate`. Nothing
+in the scored path (tests, eval, demo) depends on this class --
+`LogPublisher` is what every test, eval and demo in this repo actually
+exercises.
+
+**Alternatives considered**: none -- provisioning a real flow is out of
+scope for this row.

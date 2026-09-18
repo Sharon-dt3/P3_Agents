@@ -1,14 +1,24 @@
 """
-Adapter factory (CHN-03/CHN-04): chooses the mock or real Teams reader
-purely from config -- agent code never imports a concrete adapter
-class -- and always returns it wrapped in the scope gate, so there is
-no code path in this application that can obtain an ungated reader.
+Adapter factory (CHN-03/CHN-04, CHN-22): chooses the mock or real Teams
+reader/publisher purely from config -- agent code never imports a
+concrete adapter class -- and always returns the reader wrapped in the
+scope gate, so there is no code path in this application that can
+obtain an ungated reader.
+
+get_teams_publisher() deliberately has no equivalent scope-gate wrapper:
+the read side's ScopedTeamsReader restricts WHICH channels a reader may
+even see, but every write this programme ever makes already goes
+through SPN-09's guarded_send() first, at the call site, not inside the
+adapter -- adding a second, adapter-level gate here would duplicate
+that check rather than add a new guarantee. See DECISION_LOG.md.
 """
 
 from __future__ import annotations
 
 import os
 
+from p1.adapters.teams_publisher import TeamsPublisher
+from p1.adapters.teams_publisher_mock import DEFAULT_LOG_PATH, LogPublisher
 from p1.adapters.teams_reader import TeamsReader
 from p1.adapters.teams_reader_mock import MockTeamsReader
 from p1.config.loader import ChannelConfigStore
@@ -33,3 +43,21 @@ def get_teams_reader() -> TeamsReader:
 
     allowlisted_channel_ids = ChannelConfigStore().list_allowlisted_channels()
     return ScopedTeamsReader(reader, allowlisted_channel_ids)
+
+
+def get_teams_publisher() -> TeamsPublisher:
+    mode = os.environ.get("TEAMS_PUBLISHER_MODE", "mock")
+
+    if mode == "mock":
+        log_path = os.environ.get("TEAMS_PUBLISHER_LOG_PATH", str(DEFAULT_LOG_PATH))
+        return LogPublisher(log_path=log_path)
+    if mode == "power_automate":
+        from p1.adapters.teams_publisher_power_automate import (
+            PowerAutomateTeamsPublisher,
+        )
+
+        flow_url = os.environ.get("POWER_AUTOMATE_FLOW_URL")
+        if not flow_url:
+            raise RuntimeError("TEAMS_PUBLISHER_MODE=power_automate requires POWER_AUTOMATE_FLOW_URL")
+        return PowerAutomateTeamsPublisher(flow_url=flow_url)
+    raise ValueError(f"Unknown TEAMS_PUBLISHER_MODE: {mode!r}")

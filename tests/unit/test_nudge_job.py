@@ -110,7 +110,7 @@ class _RecordingPublisher:
     def __init__(self):
         self.calls: list[tuple[str, str]] = []
 
-    def send_direct_message(self, member_id: str, content: str) -> dict:
+    def post_direct_message(self, member_id: str, content: str) -> dict:
         self.calls.append((member_id, content))
         return {"ok": True}
 

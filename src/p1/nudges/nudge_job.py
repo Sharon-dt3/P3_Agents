@@ -14,10 +14,11 @@ per day."
 Eligibility and the cap are Python, and stay in code (this row's own
 framing) -- there is no model call anywhere in this module, and the
 reminder text itself is a fixed, deterministic template, not generated.
-Delivery is a Teams concern: this job only calls an opaque
-publisher.send_direct_message(member_id, content), the same duck-typed
-seam daily_job.py already uses for publisher.post_channel_message --
-CHN-22's own adapter (Power Automate) is what gives that a real body.
+Delivery is a Teams concern: this job only calls
+publisher.post_direct_message(member_id, content), the second method on
+CHN-22's own TeamsPublisher interface, the same seam daily_job.py
+already uses for publisher.post_channel_message -- CHN-22's LogPublisher
+and PowerAutomateTeamsPublisher are what give that a real body.
 
 Three separate guarantees layer on top of each other here, each one
 load-bearing on its own:
@@ -258,7 +259,7 @@ def _run_one_member(
 
     def send_fn():
         fresh = proposal_store.get(proposal.id)
-        return publisher.send_direct_message(fresh.payload["member_id"], fresh.payload["content"])
+        return publisher.post_direct_message(fresh.payload["member_id"], fresh.payload["content"])
 
     try:
         guarded_send(
