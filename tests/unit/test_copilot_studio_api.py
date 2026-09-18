@@ -100,14 +100,51 @@ def _seed(tmp_path):
 
 
 def _client(monkeypatch, *, api_key: str | None = API_KEY) -> TestClient:
+    """Enters the TestClient's own context manager before returning it
+    (rather than handing back a bare TestClient(app)) so the app's
+    lifespan actually runs -- a bare TestClient silently never fires
+    it, which is what let the missing-schema bug this file's newest
+    test guards against go unnoticed: every other test here calls
+    init_db()/_seed() itself, masking that the app never did its own
+    schema setup. We deliberately never __exit__ this -- there's no
+    shutdown behaviour to run, and each test gets its own process-wide
+    app object plus (via monkeypatch.chdir) its own isolated cwd/db, so
+    there's nothing to leak."""
     if api_key is None:
         monkeypatch.delenv(copilot_studio_api.API_KEY_ENV_VAR, raising=False)
     else:
         monkeypatch.setenv(copilot_studio_api.API_KEY_ENV_VAR, api_key)
-    return TestClient(copilot_studio_api.app)
+    client = TestClient(copilot_studio_api.app)
+    client.__enter__()
+    return client
 
 
-def test_health_needs_no_api_key_and_reports_whether_one_is_configured(monkeypatch):
+def test_starting_the_app_against_a_brand_new_database_does_not_500(tmp_path, monkeypatch):
+    """Regression test: a real deployment's data/p1.db can be a
+    completely fresh, zero-table SQLite file the very first time this
+    app is ever run against it (nothing else in this repo forces
+    init_db() before the server starts, unlike every other test in
+    this file, which calls _seed()/init_db() itself). Before the
+    startup hook in copilot_studio_api.py, this reproduced the exact
+    sqlite3.OperationalError: no such table: proposals seen against a
+    real, never-initialised database file."""
+    monkeypatch.chdir(tmp_path)
+    # Deliberately do NOT call init_db() or _seed() -- this is the one
+    # test in this file that must start from a truly empty cwd, with
+    # no data/p1.db at all, to prove the app initialises it itself.
+    client = _client(monkeypatch, api_key=API_KEY)
+
+    response = client.post("/list_pending_approvals", json={}, headers={"X-API-Key": API_KEY})
+
+    assert response.status_code == 200
+    assert response.json() == {"approvals": []}
+
+
+def test_health_needs_no_api_key_and_reports_whether_one_is_configured(tmp_path, monkeypatch):
+    # Isolated cwd: _client() now enters the app's lifespan, which calls
+    # init_db() -- without this chdir that would touch the real repo's
+    # data/p1.db instead of a throwaway one.
+    monkeypatch.chdir(tmp_path)
     client = _client(monkeypatch, api_key=None)
     response = client.get("/health")
     assert response.status_code == 200
@@ -117,14 +154,16 @@ def test_health_needs_no_api_key_and_reports_whether_one_is_configured(monkeypat
     assert client.get("/health").json()["api_key_configured"] is True
 
 
-def test_action_endpoint_fails_closed_when_no_api_key_is_configured_at_all(monkeypatch):
+def test_action_endpoint_fails_closed_when_no_api_key_is_configured_at_all(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     client = _client(monkeypatch, api_key=None)
     response = client.post("/list_pending_approvals", json={})
     assert response.status_code == 500
     assert copilot_studio_api.API_KEY_ENV_VAR in response.json()["detail"]
 
 
-def test_action_endpoint_rejects_a_missing_or_wrong_key(monkeypatch):
+def test_action_endpoint_rejects_a_missing_or_wrong_key(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     client = _client(monkeypatch, api_key=API_KEY)
 
     response = client.post("/list_pending_approvals", json={})

@@ -11,7 +11,7 @@ walkthrough:
 	uv run python scripts/run_walkthrough.py
 
 copilot-api:
-	uv run uvicorn p1.api.copilot_studio_api:app --reload
+	uv run uvicorn p1.api.copilot_studio_api:app --reload --reload-dir src
 
 test:
 	uv run pytest

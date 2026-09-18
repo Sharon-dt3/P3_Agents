@@ -51,6 +51,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from contextlib import asynccontextmanager
+
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
@@ -64,8 +66,31 @@ from p1.adapters.copilot_studio_connector import (
     handle_update_channel_config,
 )
 from p1.approval.proposals import ProposalNotFoundError
+from p1.storage.db import init_db
 
 API_KEY_ENV_VAR = "COPILOT_STUDIO_API_KEY"
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """A fresh deployment's data/p1.db (or any DB_PATH a real deployer
+    points this at) may not have a single migration applied yet --
+    unlike every test in tests/unit/test_copilot_studio_api.py, which
+    always calls init_db() itself before hitting this app, nothing
+    forced that for a real `uvicorn`/`make copilot-api` run before this
+    hook existed. Without it, every action endpoint 500s with
+    sqlite3.OperationalError: no such table: proposals (or messages,
+    or channels...) the first time it's ever queried against a
+    brand-new or half-provisioned database file -- run_migrations()
+    is idempotent (tracked via schema_migrations), so this is always
+    safe to call on every startup, not just the first. FastAPI's
+    TestClient only runs this when used as a context manager (see
+    _client() below) -- a bare TestClient(app) silently skips the
+    whole ASGI lifespan, startup included.
+    """
+    init_db()
+    yield
+
 
 app = FastAPI(
     title="P1 Channel -- Copilot Studio connector backend",
@@ -75,6 +100,7 @@ app = FastAPI(
         "connector's swagger definition."
     ),
     version="1.0.0",
+    lifespan=_lifespan,
 )
 
 
