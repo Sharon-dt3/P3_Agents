@@ -150,6 +150,26 @@ class LLMGateway:
         raise LLMGatewayError(f"Unknown LLM provider: {provider}")
 
     def _call_anthropic(self, prompt, system, max_tokens, temperature, tools, tool_choice):
+        """`temperature` is accepted here (and still folded into the
+        cache key -- see _cache_key) purely to keep this method's own
+        signature and _call_provider's dispatch uniform across
+        providers; it is deliberately NOT forwarded to Messages.create().
+        CHN-31's clean-clone verification found that the currently
+        locked anthropic SDK (1.5.0 -- see pyproject.toml/uv.lock) has
+        removed temperature/top_p/top_k from Messages.create() entirely
+        (confirmed by reading that SDK's own installed type stubs, not
+        by trial and error): passing it raised a hard TypeError on
+        every real, uncached call, in both a fresh clone and the
+        existing repo -- see DECISION_LOG.md's CHN-31 entry. There is no
+        replacement sampling-control parameter in this SDK version, so
+        explicit temperature=0.0 determinism is no longer enforceable on
+        the Anthropic path; Ollama's own call still honours it (see
+        _call_ollama) since Ollama's API is unaffected.
+        tests/unit/test_llm_gateway_anthropic_call_shape.py guards
+        against this ever regressing silently again -- it asserts every
+        kwarg this method builds is one the actually-installed SDK's
+        own Messages.create signature accepts, without ever making a
+        live call."""
         if self._anthropic_client is None:
             if not self.anthropic_api_key:
                 raise LLMGatewayError("ANTHROPIC_API_KEY is not set")
@@ -158,7 +178,6 @@ class LLMGateway:
         kwargs: dict[str, Any] = {
             "model": self.anthropic_model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "messages": [{"role": "user", "content": prompt}],
         }
         if system:

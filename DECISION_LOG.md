@@ -1872,3 +1872,107 @@ long-running process so `make run` became indistinguishable from
 production -- rejected as materially larger, unrelated new work; C7's
 Status table caveat already names this honestly as separate, undone
 work.
+
+## 2026-09-18 -- Hotfix (found during CHN-31, filed separately): anthropic 1.5.0 dropped `temperature` from `Messages.create()`
+
+**Not a WBS row** -- surfaced while doing CHN-31's own clean-clone
+verification (`make run`'s first real, uncached LLM call), and kept out
+of that row's commit on purpose: this touches `p1.llm.gateway`
+(SPN-02), a shared foundation every capability from CHN-09 onward
+depends on, and it changes a real behavioural guarantee (explicit
+temperature pinning), not just documentation or a demo entry point. Filed
+here as its own fix, per an explicit choice offered and taken: fix
+`gateway.py` now, as its own commit, rather than folding it into CHN-31
+or pausing for a longer investigation first.
+
+**The finding**: `_call_anthropic` unconditionally sent
+`"temperature": temperature` to `self._anthropic_client.messages.create(**kwargs)`.
+The currently locked `anthropic` package (`uv.lock` pins `1.5.0`,
+`pyproject.toml` says `anthropic>=1.5.0`) has removed `temperature` --
+and `top_p`/`top_k` with it -- from `Messages.create()` entirely: not
+renamed, not moved to `extra_body`, just gone. Confirmed three ways,
+never by trial and error alone: `inspect.signature(anthropic.resources.messages.Messages.create)`
+lists no such parameter; a repo-wide `grep -rn "temperature"` inside the
+installed `anthropic` package returns nothing at all; and
+`anthropic/types/message_create_params.py` (the SDK's own source of
+truth for the request shape) has no `temperature`/`top_p`/`top_k` field
+in its `TypedDict`. This is identical in a brand-new clone and in the
+existing repo's own `.venv` right now -- not a clean-clone-specific
+drift.
+
+**The fix**: `_call_anthropic` no longer includes `temperature` in the
+kwargs it builds. The parameter stays on `LLMGateway.generate()`'s own
+signature (still folded into the cache key, still forwarded to
+`_call_ollama`, which is unaffected -- Ollama's own API still accepts
+it) so every caller and every existing test keeps working unchanged;
+only what actually reaches the Anthropic client changed. **Honest
+caveat**: this SDK version offers no replacement sampling-control
+parameter at all, so explicit `temperature=0.0` determinism is no
+longer enforceable on the Anthropic path -- the model now runs at
+whatever its own default sampling behaviour is. This is disclosed here
+rather than silently absorbed; if reproducible, low-variance model
+output turns out to matter enough to chase further, that's a separate,
+future investigation (an `extra_body` passthrough was considered --
+see Alternatives below).
+
+**New regression test**, `tests/unit/test_llm_gateway_anthropic_call_shape.py`
+-- the reason this was invisible until a real call crashed is that
+every existing gateway test (`test_llm_gateway.py`,
+`test_llm_gateway_call_log.py`) monkeypatches `_call_provider` itself,
+so none of them ever touched `_call_anthropic`'s real kwargs. The new
+test substitutes a fake `_anthropic_client` (no real `Anthropic()`
+construction, no network call, ever) and asserts every kwarg
+`_call_anthropic` actually builds is a name the REAL, currently
+installed SDK's own `Messages.create` signature accepts (read via
+`inspect.signature`, plus the SDK's own generic escape hatches --
+`extra_headers`/`extra_query`/`extra_body`/`timeout`) -- so a future SDK
+upgrade that drops or renames another parameter fails this test at test
+time, not at the next real demo.
+
+**Non-vacuousness (bug injection)**: reintroduced `"temperature": temperature`
+into `_call_anthropic`'s kwargs, reran the two new tests -- both failed,
+one on the "sent an unsupported kwarg" assertion, the other on the
+explicit "temperature is never forwarded" assertion. Restored
+byte-identical (`diff` confirmed), reran green. Full suite: 396 passed
+(394 + these 2 new tests), 2 skipped; ruff clean.
+
+**Re-verified against the actual symptom**: reran `make run` (no `.env`,
+no key in the shell) after the fix. It no longer raises
+`TypeError: Messages.create() got an unexpected keyword argument 'temperature'`.
+It now fails cleanly at `LLMGatewayError: ANTHROPIC_API_KEY is not set`,
+which -- per `LLMGateway.generate()`'s own designed degrade-to-Ollama
+fallback (SPN-02) -- retries against a local Ollama endpoint and fails
+there instead with a plain `Connection refused`. That is existing,
+documented gateway behaviour surfaced by CHN-31, not introduced by this
+fix; a real `ANTHROPIC_API_KEY` now reaches a real classification/digest
+call instead of crashing before ever sending one.
+
+**Open thread, disclosed rather than resolved**: `eval/results.jsonl`'s
+most recent entries (today, `run_at` 05:25:16 / 05:29:40 / 05:51:27
+UTC) show `all_passed: true` with real-looking `model_id`s and
+per-metric detail strings, which on their face means `scripts/run_eval.py`
+made real, live, successful Anthropic calls through this exact
+(previously broken) code path only 1-2 hours before this fix. `uv.lock`
+was not touched today (last touched in the CHN-02/CHN-25 era) and
+`data/cache/llm/` is empty and gitignored, so neither "the lockfile
+changed" nor "a stale cache masked it" explains the discrepancy -- and I
+was not able to resolve it further within this fix's own scope. Flagging
+it plainly rather than asserting a cause I haven't confirmed: those
+three results.jsonl entries' legitimacy is now an open question, and a
+fresh `uv run python scripts/run_eval.py` run (with a real key, by a
+human -- this project's standing rule is that I never make a live model
+call as part of my own verification) would settle it either way.
+
+**Alternatives considered**: passing `temperature` via `extra_body={"temperature": temperature}`
+instead of dropping it -- rejected without evidence that the server-side
+API still honours it there; the SDK's own request-shape source
+(`message_create_params.py`) lists no such field anywhere, so this would
+have been a guess, not a confirmed fix, exactly the kind of unverified
+platform-behaviour assumption this project's own standing rule (use
+AskUserQuestion / flag rather than guess) exists to avoid. Pinning
+`anthropic` to an older, compatible version instead of changing
+`gateway.py` -- not pursued without first knowing whether an older
+version is even compatible with everything else pinned in `uv.lock`
+(cache format, retry classes, etc.), and changing a locked dependency
+version is a larger, riskier surface than removing one now-unsupported
+kwarg from one call site.
