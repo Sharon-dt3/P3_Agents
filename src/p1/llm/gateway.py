@@ -33,6 +33,13 @@ load_dotenv()
 
 logger = logging.getLogger("p1.llm.gateway")
 
+# The one place this programme's actual production model id lives --
+# CHN-27's eval harness tags every committed run with this same
+# constant by default (see scripts/run_eval.py), so "which model
+# produced these numbers" is never a second, independently maintained
+# guess at what this parameter's own default says.
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
+
 
 class LLMGatewayError(RuntimeError):
     """Raised when a provider could not satisfy the request."""
@@ -55,7 +62,7 @@ class LLMGateway:
         self,
         provider: str | None = None,
         anthropic_api_key: str | None = None,
-        anthropic_model: str = "claude-sonnet-4-20250514",
+        anthropic_model: str = DEFAULT_ANTHROPIC_MODEL,
         ollama_base_url: str | None = None,
         ollama_model: str | None = None,
         cache_dir: str | Path = "data/cache/llm",

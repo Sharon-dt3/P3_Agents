@@ -44,6 +44,22 @@ See docs/MASTER_IMPLEMENTATION_PLAN.md for the full six-week, three-agent progra
 
 (This table gets filled in from the actual code as capabilities land -- see CHN-30.)
 
+## Eval results
+
+    uv run python scripts/run_eval.py
+
+**34/34 golden-case metrics passing, across all 12 golden cases (GC1-GC12).**
+
+Latest committed run: 2026-09-18T05:29:40Z -- model `claude-sonnet-4-20250514`,
+prompt versions `chn09_classify_message@v1`, `chn13_daily_summary@v1`,
+`chn19_weekly_narrative@v1`.
+
+Every run appends one full record (timestamp, model id, every prompt
+capability's version, and every metric's measured/target/pass-fail) to
+`eval/results.jsonl` -- the committed history in full is there, this is
+just the headline. See `docs/MASTER_IMPLEMENTATION_PLAN.md`'s own
+golden-case table for what each GC actually checks.
+
 ## AI assistance
 
 Portions of this repository's scaffolding, code, and documentation were written with assistance from Claude (Anthropic), used interactively during development. Every file's purpose is understood and can be explained by the author.

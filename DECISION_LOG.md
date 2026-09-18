@@ -1346,3 +1346,62 @@ an approvable proposal" story -- rejected as adding approval-gate
 ceremony around an action that has no recipient and nothing to refuse,
 and because it would blur SPN-08's own scope (outbound actions) with a
 plain internal data artifact.
+
+## 2026-09-18 -- CHN-27: a flag-less eval run is tagged with a real model id and every prompt capability's real version, by default
+
+**Decision**: `scripts/run_eval.py`'s `resolve_model_id()`/
+`resolve_prompt_versions()` mean `uv run python scripts/run_eval.py`,
+with no flags at all, now tags its committed run with
+`p1.llm.gateway.DEFAULT_ANTHROPIC_MODEL` (a new constant, extracted
+from `LLMGateway`'s own existing default parameter value rather than a
+second copy of the same string) and with every prompt capability under
+`prompts/` at its own current checked-in version --
+`PromptRegistry.list_capabilities()` plus `.get(capability).version`
+for each, not a hand-maintained list. `--model-id`/`--prompt-version`
+still override these per-run, for reproducing a past run against an
+older prompt or model deliberately.
+
+**Context/reasoning**: before this row, `run_eval.py` defaulted both to
+nothing (`model_id=None`, `prompt_versions={}`), so a committed run's
+own timestamp/model/prompt-version story was only as complete as
+whoever ran it remembered to make it with the right flags -- exactly
+the kind of thing this row's own DoD ("results file committed with
+timestamp, model ID and prompt versions") should not depend on a human
+getting right by hand every time. Deriving both defaults from the same
+single sources of truth the rest of the system already uses
+(`LLMGateway`'s own default, `PromptRegistry`'s own file listing) means
+the recorded metadata can't drift from what the system would actually
+run with -- the same "docs/metadata cannot outrun the code" discipline
+CHN-25/CHN-26 already applied to their own published artifacts.
+
+**Alternatives considered**: leaving the CLI flags optional with no
+defaults, and relying on a documented convention ("always pass
+--model-id") -- rejected as exactly the kind of convention that erodes
+the first time someone runs the script in a hurry; a default that is
+always correct removes the failure mode entirely rather than
+documenting around it.
+
+## 2026-09-18 -- CHN-27: the README gets a headline eval-results section; the full status table stays CHN-30's job
+
+**Decision**: this row adds a "## Eval results" section to README.md
+quoting the latest committed run's headline numbers (34/34 metrics,
+12/12 golden cases, timestamp, model id, prompt versions) and pointing
+at `eval/results.jsonl` for the full history. It does not touch the
+existing "## Status" capability table or the stale "Week 1, Day 1"
+status line above it.
+
+**Context/reasoning**: this row's own text asks only to "quote headline
+numbers in the README"; the capability-by-capability status table is
+explicitly CHN-30's own row ("Status table written FROM the code...
+Written LAST, from the code"), and the README itself already says so
+in a comment next to that table. Touching that table now, ahead of
+CHN-29's edge-case pass, would mean writing status claims before D10's
+own hardening work is done -- precisely the "README outruns the code"
+failure mode D10's own risk register calls out.
+
+**Alternatives considered**: updating the whole README's status
+picture now, since the numbers are genuinely better than what it
+currently claims -- rejected as scope creep into CHN-30's own row, and
+because a status table written before CHN-28/29 (fix the worst
+finding, edge-case pass) would already be stale by the time CHN-30
+actually runs.
