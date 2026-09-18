@@ -2853,3 +2853,49 @@ only removes one of the two permissions blocking it. The other,
 (`19:ZVl0BYQCKWi4_oXsG_tuu3F4p5HsgQGobGhAMiZD_ro1@thread.tacv2`, added
 in an earlier session) is the only thing the next `graph_smoke_test.py`
 run needs to succeed against.
+
+## 2026-09-19 -- graph_login.py's scope list was never actually updated after the ingestion refactor
+
+**Finding.** The smoke test's next real run still hit two separate,
+unrelated problems, both self-inflicted oversights from earlier the
+same day. First: `graph_login.py`'s `GRAPH_SCOPES` still requested
+`Channel.ReadBasic.All` -- the immediately preceding entry removed
+every *caller's* dependency on that permission, but never touched the
+one place that actually requests it at sign-in, so re-running
+`graph_login.py` would still have hit the same tenant-wide "Need admin
+approval" wall as before, for a permission nothing needs anymore.
+Second, and what actually surfaced first in practice: the smoke test
+returned `401 Unauthorized` for every channel_id, including the real
+one -- not a permission problem at all. The `.env` token in place was
+still the very first one from earlier in this session (device-code
+`HG49KVTCM`, ~72-minute validity), because every later `graph_login.py`
+attempt had requested a scope set the tenant refused before ever
+producing a fresh token -- so `GRAPH_ACCESS_TOKEN` was simply stale.
+
+**Fix.** Reverted `GRAPH_SCOPES` to `["ChannelMessage.Read.All"]` only
+-- the sole permission anything in this codebase actually calls live,
+confirmed by this same day's ingestion refactor. Updated
+`scripts/graph_login.py`'s docstring to state this plainly, and
+`tests/unit/test_graph_login.py`'s scope assertion to match (renamed
+the test accordingly). This scope was already tenant-consented from
+CHN-01's original grant, so the next `graph_login.py` run should
+neither need Alfred nor hit the admin-approval screen -- and should
+produce a fresh, valid token, fixing the `401` as a side effect.
+
+**Judgment calls.** None beyond the immediately preceding entry's --
+this is a direct, mechanical follow-through of that decision (the
+scope this script requests should always match what live code
+actually calls), not a new tradeoff.
+
+**Non-vacuousness.** N/A -- straightforward scope-list correction and
+docstring update, covered by the existing scope-assertion test
+(`test_acquire_token_requests_only_channel_message_read_all`), not new
+application logic.
+
+**Verified.** `tests/unit/test_graph_login.py`: 10 passed. Full suite:
+436 passed, 2 skipped. Ruff clean.
+
+**Not done, on purpose.** Still not proven end-to-end -- the user needs
+to actually re-run `graph_login.py` (fresh token) and
+`graph_smoke_test.py` (real read) for this to be confirmed live, not
+just theorized from the code.

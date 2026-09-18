@@ -61,7 +61,7 @@ def test_acquire_token_happy_path_returns_result_and_requests_right_scope(capsys
     assert "ABC123" in captured.out
 
 
-def test_acquire_token_requests_channel_message_and_channel_basic_scopes():
+def test_acquire_token_requests_only_channel_message_read_all():
     made = {}
 
     def make(client_id, authority):
@@ -70,10 +70,7 @@ def test_acquire_token_requests_channel_message_and_channel_basic_scopes():
         return app
 
     graph_login.acquire_token(tenant_id="t", client_id="c", app_factory=make)
-    assert made["app"].scopes_requested == [
-        "ChannelMessage.Read.All",
-        "Channel.ReadBasic.All",
-    ]
+    assert made["app"].scopes_requested == ["ChannelMessage.Read.All"]
     assert made["app"].authority == "https://login.microsoftonline.com/t"
 
 

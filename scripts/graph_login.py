@@ -25,19 +25,21 @@ left untouched) and prints how long it's valid for, typically about an
 hour.
 
 Nothing here can succeed before tenant admin consent has actually been
-granted for the scopes below -- Microsoft will refuse the sign-in with an
-AADSTS65001 "needs admin approval" style error if either hasn't been (see
+granted for the scope below -- Microsoft will refuse the sign-in with an
+AADSTS65001 "needs admin approval" style error if it hasn't been (see
 DECISION_LOG.md's CHN-01 entry for where that stands). ChannelMessage.Read.All
-was the original CHN-01 grant; Channel.ReadBasic.All was added once
-GraphTeamsReader's list_channels() turned out to need its own, narrower
-permission (needed by the ingestion sync and the scope-gate's allowlist
-filtering). A third permission, ChannelMember.Read.All, is configured on
-the app registration but deliberately NOT requested here -- it's blocked on
-admin consent (only Alfred can grant it) and nothing live needs it yet,
-since list_channel_members() is written and tested against the mock but
-not wired into any real code path. Add it back to GRAPH_SCOPES once both
-are true: consent lands, and something live actually calls it -- see that
-same entry's follow-up note.
+is CHN-01's original grant, and -- after CHN-05's ingestion refactor -- the
+only scope anything in this codebase actually needs live: reading channel
+content only ever calls list_messages(). Two other permissions
+(Channel.ReadBasic.All, ChannelMember.Read.All) are configured on the app
+registration but deliberately NOT requested here: both are blocked on
+tenant admin consent (only Alfred can grant them, and this tenant requires
+admin approval for any new grant regardless of the per-permission
+"admin consent required" flag), and neither is called by any live code
+path anymore -- list_channels() was the ingestion sync's own dependency on
+Channel.ReadBasic.All, removed by reading the allowlist from config
+instead; list_channel_members() was never wired in to begin with. See
+DECISION_LOG.md's CHN-01 follow-up entries for the full history.
 
 This access token is short-lived by design -- re-run this script
 whenever it expires. Turning this into something that refreshes itself
@@ -61,11 +63,11 @@ load_dotenv()
 
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 GRAPH_SCOPES = [
-    "ChannelMessage.Read.All",  # list_messages -- reading channel content
-    "Channel.ReadBasic.All",  # list_channels -- ingestion sync + scope-gate allowlist filtering
-    # "ChannelMember.Read.All" is configured on the app registration but not
-    # requested here yet -- blocked on admin consent and unused by any live
-    # code path (see DECISION_LOG.md CHN-01 follow-up).
+    "ChannelMessage.Read.All",  # list_messages -- the only Graph call anything live makes
+    # Channel.ReadBasic.All and ChannelMember.Read.All are both configured on
+    # the app registration but not requested here -- blocked on admin consent
+    # (only Alfred can grant them) and, as of CHN-05's ingestion refactor,
+    # unused by any live code path (see DECISION_LOG.md's CHN-01 follow-ups).
 ]
 
 
