@@ -2464,3 +2464,167 @@ actual intended live run against Teams (e.g. once the user has a real
 `GRAPH_ACCESS_TOKEN` and wants to run `scripts/graph_smoke_test.py` or
 `make run` for real), not left set permanently, until the test-isolation
 gap above is separately fixed.
+
+## 2026-09-18 -- CHN-05's real member-registration gap, closed
+
+**Finding.** README.md's CHN-31 entry already named this honestly as a
+real, pre-existing gap: `sync_all_allowlisted_channels` (the real
+ingestion path, used by a live Graph sync) had no member-sync
+capability of its own. What that gap actually meant in practice, found
+while preparing `p1-agent-test` for a genuine live run: `messages.author_id`
+is a foreign key into `members(id)` with `PRAGMA foreign_keys = ON`
+(see `p1.storage.db`) -- so ingesting a real message from anyone not
+already known to the database would crash the entire sync outright
+with `sqlite3.IntegrityError: FOREIGN KEY constraint failed`, not just
+display a blank name. The only things that ever populated `members`
+were `scripts/run_daily.py`, `scripts/run_walkthrough.py`, and
+`p1.eval.chn12_cases`, each separately pre-inserting rows from their
+own committed fixture authors before calling into ingestion -- none of
+which helps a real Graph sync, where the authors aren't known ahead of
+time.
+
+**Build.** Moved member-registration into `MessageStore.upsert_messages()`
+itself (`p1.storage.messages_repo`) -- the one place every reader's
+messages actually pass through, mock, Graph, or fixtures alike.
+`_ensure_member_exists()` does `INSERT OR IGNORE INTO members (id,
+display_name) VALUES (author_id, author_id)` before the message insert,
+for any non-null `author_id` -- the exact same fallback pattern all
+three existing call sites already used, generalized rather than
+reinvented. A `None` author_id (a bot/system message with no sender,
+already a real, tested case) is left alone entirely, matching the
+column's existing nullable FK.
+
+**Judgment calls.** (1) Used the author_id itself as a placeholder
+display name, since `GraphTeamsReader._parse_message` only reliably
+extracts a sender's `id` from Graph's delta message payload, not a
+display name -- `list_channel_members()` (already written, never
+wired into ingestion) could fill in a real one later without this path
+needing to change at all, since `INSERT OR IGNORE` never overwrites an
+existing row (proven directly by
+`test_an_already_known_member_is_never_overwritten`). Wiring
+`list_channel_members()` into ingestion for real display names is a
+deliberate non-goal of this row: it needs a different Graph permission
+scope (`ChannelMember.Read.All` or similar) than `ChannelMessage.Read.All`
+already requested, which would mean a second, separate admin-consent
+round-trip -- not worth it for what is, for `p1-agent-test`, a
+single-person roster already known and named in its config. (2) Left
+the three existing call sites' own manual member-seeding in place
+rather than removing them -- harmless now (`INSERT OR IGNORE` makes
+them pure no-ops once this row's fix runs first), and removing them
+was out of scope for closing this specific gap.
+
+**Non-vacuousness (bug injection).** Removed the one line calling
+`_ensure_member_exists` and reran the new tests:
+`test_ingesting_a_never_before_seen_author_no_longer_crashes` failed
+with the exact real error a live run would have hit --
+`sqlite3.IntegrityError: FOREIGN KEY constraint failed`. Restored
+byte-identical, reran: passing again. Full suite: 434 passed, 2
+skipped, ruff clean, both with and without a clean-clone simulation
+(`data/` moved aside and restored).
+
+**What this actually unblocks.** Previously, even with a perfect,
+working `GRAPH_ACCESS_TOKEN` and a correctly allowlisted channel, the
+very first real message `scripts/run_walkthrough.py` (or any future
+live-run entry point built on `sync_all_allowlisted_channels`) tried to
+ingest from `p1-agent-test` would have crashed the whole run. That
+class of failure is now impossible -- any author, known or not, ahead
+of time or not, can be ingested cleanly.
+
+**Not done, on purpose.** `scripts/run_daily.py` (the `make run` demo
+entry point) still loads its messages from committed fixtures, not a
+real Teams connection -- deliberately: the master plan's own submission
+checklist requires the scored path run from a clean clone with zero
+credentials and no tenant (see docs/MASTER_IMPLEMENTATION_PLAN.md
+Appendix J and R3's risk mitigation), so `make run` staying
+fixture-based is required, not a shortfall. `scripts/run_walkthrough.py`
+is the one that already goes through the real path
+(`get_teams_reader()` + `sync_all_allowlisted_channels()`) and is what
+an actual live run against `p1-agent-test` will use, once a real token
+exists.
+
+## 2026-09-18 -- CHN-25's Copilot Studio backend, made to actually work end to end
+
+**Finding.** Standing up the real Copilot Studio custom connector against
+the live `copilot_studio_api` app (via ngrok) surfaced two real gaps that
+no existing test caught, because every test in
+`tests/unit/test_copilot_studio_api.py` called `init_db()` (directly or
+via `_seed()`) before ever touching the app -- something no real
+deployment path did for it automatically:
+
+1. **Every action endpoint 500'd against the real, on-disk `data/p1.db`**
+   with `sqlite3.OperationalError: no such table: proposals`. That file
+   existed (auto-created empty by `get_connection()`'s
+   `sqlite3.connect()` the first time anything touched it) but had never
+   had a single migration applied -- nothing before this row ever called
+   `run_migrations()`/`init_db()` as part of actually starting the
+   server, only as part of test fixtures, `scripts/seed.py`, or the two
+   fixture-driven walkthrough/demo scripts.
+2. Testing the connector for real from Power Platform's own "Test
+   operation" panel (not just via `curl` with a hand-added header) hit
+   ngrok's free-tier interstitial warning page even on POST requests
+   with a real API key -- confirmed directly: `Content-Type: text/html`,
+   a literal `<!DOCTYPE html>` body, on every action call.
+
+**Build.**
+1. `src/p1/api/copilot_studio_api.py`: replaced the FastAPI app's plain
+   construction with a `lifespan` context manager (the modern
+   replacement for the deprecated `@app.on_event("startup")`, which
+   ruff/FastAPI both flagged) that calls `init_db()` before the app ever
+   serves a request. `run_migrations()` is idempotent (tracked via its
+   own `schema_migrations` table), so this is always safe to run on
+   every single startup, not just a fresh deploy's first one.
+   `tests/unit/test_copilot_studio_api.py::_client()` was updated to
+   actually enter the `TestClient`'s own context manager (a bare
+   `TestClient(app)` silently never runs ASGI lifespan at all, which is
+   exactly how every existing test masked this gap without meaning to);
+   the three tests that didn't already `monkeypatch.chdir(tmp_path)`
+   picked up one, so the lifespan's `init_db()` never touches the real
+   repo's `data/p1.db` during a test run.
+2. Her actual, already-running `data/p1.db` was one-time-fixed directly
+   by running `uv run python scripts/seed.py` against it (all 5
+   migrations applied, `[seed] Database initialised` confirmed) -- the
+   code fix above means this manual step is never required again for
+   any future deployment, including a from-scratch one.
+3. The ngrok interstitial is Power-Platform-connector-side, not
+   FastAPI-app-side: added a "Set HTTP header" policy template
+   (`ngrok-skip-browser-warning: true`, applied to every request) on the
+   custom connector itself, in the Power Platform maker portal --
+   nothing in this repo needed to change for this half, since it's
+   entirely about what ngrok's free tier does to *any* request lacking
+   that header, regardless of caller.
+
+**Judgment calls.** (1) Used `lifespan` over keeping
+`@app.on_event("startup")` -- both work identically for this purpose,
+but `on_event` is deprecated in the FastAPI version this repo pins, and
+"complete everything, real" is a bad time to leave a deprecation warning
+sitting in a file freshly touched for exactly this. (2) Fixed the three
+tests that didn't isolate their cwd via `tmp_path`/`chdir`, rather than
+leaving them and accepting that the app's own tests would mutate the
+real repo's `data/p1.db` on every test run -- once `_client()` started
+actually entering the lifespan, this stopped being a hypothetical risk.
+
+**Non-vacuousness (bug injection).** Replaced the lifespan's `init_db()`
+call with a bare `yield` (schema-init removed, nothing else touched) and
+reran: `test_starting_the_app_against_a_brand_new_database_does_not_500`
+failed with the exact real error a live, never-initialised deployment
+hits -- `sqlite3.OperationalError: no such table: proposals`. Restored
+byte-identical, reran: passing again, 10/10 in this file, 435 passed / 2
+skipped across the full suite, ruff clean.
+
+**Verified live, not just in tests.** After both fixes: the Power
+Platform connector's own "Test operation" panel round-tripped
+`health_health_get` (200, real `application/json` body, not the ngrok
+interstitial) and `list_pending_approvals_list_pending_approvals_post`
+(200, `{"approvals": []}` -- correctly empty, since no real Teams
+ingestion or digest cycle has produced a live proposal yet, not an
+error).
+
+**Not done, on purpose.** The connector's remaining 3 operations
+(`approve`, `reject`, `update_channel_config`) were not individually
+re-tested from the Power Platform Test panel after this fix, since they
+share the exact same auth/db-init code path already proven by
+`list_pending_approvals` and by their own existing
+`test_copilot_studio_api.py` coverage -- there is no proposal to
+approve/reject yet with zero real ingested data, and manufacturing a
+fake one through the live connector (rather than through a real digest
+cycle) would test nothing this row's fix is actually about.

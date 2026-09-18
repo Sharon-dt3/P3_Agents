@@ -26,6 +26,7 @@ class MessageStore:
         conn = get_connection(self._db_path)
         try:
             for message in messages:
+                self._ensure_member_exists(conn, message.author_id)
                 conn.execute(
                     """
                     INSERT INTO messages (
@@ -64,6 +65,49 @@ class MessageStore:
             conn.commit()
         finally:
             conn.close()
+
+    @staticmethod
+    def _ensure_member_exists(conn, author_id: str | None) -> None:
+        """messages.author_id is a foreign key into members(id)
+        (PRAGMA foreign_keys = ON, see p1.storage.db) -- so ingesting a
+        real message from anyone not already known to this database
+        would otherwise crash the whole sync outright with a foreign
+        key violation, not just fail to show a nice display name.
+
+        This was a real, previously-open gap (see DECISION_LOG.md and
+        README.md's CHN-31 entry): the only thing populating `members`
+        was scripts/run_daily.py, scripts/run_walkthrough.py, and
+        p1.eval.chn12_cases each separately pre-inserting rows from
+        their own committed fixture data before calling into ingestion
+        -- fine for a demo that only ever ingests fixture authors, but
+        nothing at all did this for a real Graph-backed sync, where the
+        author_ids ingestion actually encounters are not known ahead of
+        time.
+
+        Fixing it here, centrally, in the one place every reader's
+        messages actually pass through (mock, Graph, or fixtures
+        alike), means no caller needs to pre-seed anything, ever again,
+        regardless of which TeamsReader produced the message.
+        `TeamsMessage` doesn't carry a display name (Graph's own delta
+        message payload only ever gives a sender's id reliably -- see
+        GraphTeamsReader._parse_message), so a never-before-seen
+        author_id is registered using itself as a placeholder
+        display_name, exactly matching the fallback every existing
+        fixture-seeding call site above already used
+        (`INSERT OR IGNORE INTO members (id, display_name) VALUES (?, ?)`
+        with author_id passed for both) -- this generalizes that same,
+        already-proven pattern rather than inventing a new one.
+        A real display name can be filled in later (e.g. once CHN-01's
+        list_channel_members() -- already written, just never wired
+        into ingestion -- is actually called) without this path ever
+        needing to change: INSERT OR IGNORE never overwrites a row a
+        richer sync already populated."""
+        if author_id is None:
+            return
+        conn.execute(
+            "INSERT OR IGNORE INTO members (id, display_name) VALUES (?, ?)",
+            (author_id, author_id),
+        )
 
 
 def _normalize(body: str) -> str:
