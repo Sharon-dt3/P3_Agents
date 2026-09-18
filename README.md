@@ -17,7 +17,7 @@ Reads allowlisted Microsoft Teams channels, tracks who has and hasn't posted an 
     cp .env.example .env   # fill in real values before running against live services
     make install            # uv sync -- installs all dependencies
     make seed                # builds a fresh SQLite DB from the committed migrations
-    make run                  # prints the real daily-digest job's current status (see below)
+    make run                  # runs the real full flow (mock adapter) end to end -- see below
 
 Run tests and lint:
 
@@ -26,7 +26,9 @@ Run tests and lint:
 
 `make seed` only runs the SQLite migrations (SPN-04) -- it does not regenerate the seed fixture data. That data (3 channels, 10 working days, 15 planted difficulties from source sheet 06 plus 3 more added by CHN-28) is deterministic (seed=42) and already committed under `seed/fixtures/`; it was produced once by `uv run python scripts/generate_seed_fixtures.py` and never needs to be regenerated unless the fixture generator itself changes.
 
-`make run` calls `scripts/run_daily.py`, which is still a placeholder -- the real, tested daily-digest job (`p1.publishing.daily_job.run_daily_digest_job`, scheduled per channel by `p1.publishing.scheduler.build_scheduler`) exists and passes its own tests and GC6 (see Status below), but nobody has yet wired it into a standalone long-running process. Every test, the eval harness, and CHN-24/27's real runs all call `run_daily_digest_job` directly instead. Wiring a `scripts/run_daily.py` that actually starts the scheduler is real, undone work -- it just isn't part of this row.
+`make run` (CHN-31) calls `scripts/run_daily.py`, which now runs the real full flow, once, end to end: ingest the committed mock fixtures for both allowlisted channels, run CHN-08/09 detection, build CHN-10's participation ledger, and generate and publish CHN-13/17's daily digest -- through the exact same `p1.publishing.daily_job.run_daily_digest_job` every unit test, GC6, and CHN-24/27's own real runs already exercise, never a second, separately maintained demo path. It requires only a real `ANTHROPIC_API_KEY` in `.env` (the model writes the digest's prose from already-computed facts -- see `p1.reporting.daily_summary`'s own docstring); it needs no Graph/tenant credential at all, since `TEAMS_READER_MODE` and `TEAMS_PUBLISHER_MODE` both default to mock. A channel's very first publish is always left pending for a human to approve (CHN-17's own rule), so a fresh clean-clone run reports `awaiting_approval` for both channels -- that is the correct, honest first result, not a failure.
+
+This is a one-shot manual run, not a standalone always-on process: wiring `p1.publishing.scheduler.build_scheduler`'s clock into a long-running per-channel scheduler is still real, undone work -- see the Status table's C7 row. Every test, the eval harness, and CHN-24/27's own real runs all call `run_daily_digest_job` directly, same as this script now does.
 
 ## Project structure
 
@@ -60,7 +62,7 @@ One row per capability from `docs/MASTER_IMPLEMENTATION_PLAN.md`'s own traceabil
 | C4 | MUST | Update detection -- rules then classifier | **Done** | `src/p1/detection/rules.py`, `src/p1/detection/classifier.py`; GC1 in `src/p1/eval/chn11_cases.py` (7 of CHN-08's 8 rules have a real ground-truth example as of CHN-28; `non_working_day` is proven instead at the participation-ledger level by `tests/unit/test_participation_edge_cases.py`, CHN-29) |
 | C5 | MUST | Participation ledger and non-responder detection | **Done** | `src/p1/participation/ledger.py`; GC2 in `src/p1/eval/chn11_cases.py`; `tests/unit/test_participation_edge_cases.py` (CHN-29's edge-case pass) |
 | C6 | MUST | Per-channel daily summary with grounding | **Done** | `src/p1/reporting/daily_summary.py`, `src/p1/grounding/kernel.py`; GC3/GC4 in `src/p1/eval/chn15_cases.py`, GC9 in `src/p1/eval/chn16_cases.py` |
-| C7 | MUST | Scheduled daily and weekly publishing | **Done** (code + tests; no standalone always-on process yet -- see Quick start) | `src/p1/publishing/scheduler.py`, `src/p1/publishing/daily_job.py`; GC6 in `src/p1/eval/chn18_cases.py` |
+| C7 | MUST | Scheduled daily and weekly publishing | **Done** (code + tests; `make run` (CHN-31) runs the real job once end to end; no standalone always-on process yet -- see Quick start) | `src/p1/publishing/scheduler.py`, `src/p1/publishing/daily_job.py`, `scripts/run_daily.py`; GC6 in `src/p1/eval/chn18_cases.py`; `tests/unit/test_run_daily_full_flow.py` |
 | C8 | MUST | Approval gate and audit for outbound actions | **Done** | `src/p1/approval/proposals.py`, `src/p1/approval/write_guard.py`; GC8 in `src/p1/eval/chn24_cases.py` |
 | C9 | SHOULD | Weekly roll-up with participation trend | **Done** | `src/p1/reporting/weekly_summary.py`; GC11 in `src/p1/eval/chn20_cases.py` |
 | C10 | SHOULD | Nudge non-responders, opt-in and capped | **Done** | `src/p1/nudges/nudge_job.py`; GC7 in `src/p1/eval/chn24_cases.py` |
@@ -83,6 +85,7 @@ Two more surfaces sit alongside C1 and C8 but aren't their own numbered capabili
 - **CHN-25 (Copilot Studio UI).** Built as a documented, tested connector contract rather than a live Copilot Studio agent, deliberately following CHN-22's Power Automate precedent -- no Copilot Studio environment has been provisioned. The scored fallback (Streamlit) is real and is what's actually exercised end-to-end.
 - **C13 / C14 (cross-channel question answering; per-person digest).** COULD-priority in the master plan's own capability table, explicitly "not planned" -- no code exists for either.
 - **GC1 recall (update-detection).** Deliberately reported, never gated (target `0.0`), per the master plan's own stated rationale: a missed exclusion is a nuisance, a false "no update" names an innocent person. CHN-28 investigated gating it anyway and rejected that, since it would override this explicit, already-reasoned spec rather than fix a defect in it.
+- **CHN-31 (clean-clone verification).** `scripts/run_daily.py`'s new full-flow demo inserts `members` rows straight from the committed fixture data before ingesting messages, exactly as every golden-case eval module already does (see e.g. `p1.eval.chn24_cases`) -- CHN-05's ingestion orchestrator (`sync_all_allowlisted_channels`) drains messages from a `TeamsReader` but has never had a member-sync capability of its own, mock or Graph. That gap is real and pre-existing, not introduced by this row; a real member-sync path (Graph's own `list_channel_members`, wired into ingestion) is deferred to its own future row rather than built here. Separately: if `ANTHROPIC_API_KEY` is missing, the visible error is an Ollama connection failure, not a plain "no API key" message -- `p1.llm.gateway.LLMGateway`'s own designed degrade-to-Ollama fallback (SPN-02) catches the missing-key error and tries a local Ollama call next, which then fails on its own terms. That is existing, documented gateway behaviour this row surfaced, not changed.
 
 ## Eval results
 

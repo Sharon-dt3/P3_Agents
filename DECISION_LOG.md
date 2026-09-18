@@ -1740,3 +1740,135 @@ per-row entries already say in more detail; kept the WBS framing out of
 the *table* but folded task IDs into the Verify column and the scope-cuts
 section instead, so both views are still recoverable from this one
 document.
+
+## 2026-09-18 -- CHN-31: `make run` didn't run anything -- a clean clone couldn't have passed this row as written
+
+**The finding**: this row's own DoD is "clone into a fresh directory,
+follow only the README, run the full flow against the mock adapter" /
+"works with zero undocumented steps and no Graph credentials." Reading
+`scripts/run_daily.py` and the README's own Quick start section before
+touching anything showed `make run` printed a placeholder string
+("[run] The daily-digest job itself is implemented ... this entry point
+just doesn't call it yet") and did nothing else. A clean clone following
+only the README would never see a real digest, a real ledger, or a real
+outbound message -- the "run the full flow" half of this row's DoD was
+false as of CHN-30, not merely underdocumented. This is exactly the
+"real, undone work" CHN-30 explicitly deferred ("Wiring a
+`scripts/run_daily.py` that actually starts the scheduler is real,
+undone work -- it just isn't part of this row"), and CHN-31 is that
+deferred row, not a reason to defer again.
+
+**What was built**: `scripts/run_daily.py` now has a real,
+dependency-injectable `run_full_flow()` that, for both allowlisted
+channels (`proj-alpha`, `proj-beta` -- `proj-gamma` is not allowlisted
+and is correctly never touched), on a fixed demo day inside the
+committed fixture window (`2025-06-11`, an ordinary mid-window working
+Wednesday for both channels, not the first or last day): ingests the
+committed mock fixtures, runs CHN-08/09 detection, builds CHN-10's
+ledger, and generates and publishes CHN-13/17's daily digest through
+the exact same `p1.publishing.daily_job.run_daily_digest_job` every
+unit test, GC6, and CHN-24/27's own "real runs" already exercise --
+never a second, separately maintained demo path. `main()` is a thin
+wrapper calling `run_full_flow()` with production defaults (the real
+`LLMGateway`, the real `get_teams_publisher()`).
+
+**Two judgment calls, both flagged rather than silently made**:
+
+1. **Member rows.** `run_full_flow()` inserts `members` rows straight
+   from the fixture data before ingesting messages -- the identical
+   pattern already used, independently, in seven different
+   `p1.eval.chn*_cases.py` modules (`chn11`, `chn12`, `chn15`, `chn16`,
+   `chn20`, `chn24`). Investigating why surfaced a real, pre-existing
+   gap: `p1.ingestion.sync.sync_all_allowlisted_channels` (CHN-05) syncs
+   *messages* from a `TeamsReader` but has never had any member-sync
+   capability at all, mock or Graph -- every eval module already works
+   around this the same way, which is why the pattern was safe to
+   reuse rather than a shortcut invented for this row. Building a real
+   member-sync ingestion path (wiring `TeamsReader.list_channel_members`
+   into `sync.py`) is real, new capability work and is deferred to its
+   own future row, not built here -- named in README.md's Key decisions
+   section so it isn't silently repeated as solved.
+2. **Scope of "full flow."** `run_full_flow()` calls the real
+   `run_daily_digest_job` (not a stub), which means a real digest
+   genuinely requires one real Anthropic API call (the model turns
+   already-computed facts into prose -- see `daily_summary.py`'s own
+   docstring); this is normal product behaviour on the mock *Teams*
+   path, not a Graph/tenant dependency, and was deliberately not
+   papered over with a second, fake "demo-only" LLM gateway -- a demo
+   that doesn't really call the model isn't proof the real flow works.
+   `.env.example` already documents `ANTHROPIC_API_KEY` under "LLM
+   Gateway," so this needs no new documentation, only the README's
+   `make run` line being honest that this is what it now does.
+
+**Non-vacuousness (bug injection)**: temporarily removed the
+member-insertion block from `scripts/run_daily.py`, reran
+`tests/unit/test_run_daily_full_flow.py` -- both tests failed with a
+real `sqlite3.IntegrityError: FOREIGN KEY constraint failed` (never a
+silent pass), restored the file byte-identical (`diff` confirmed) and
+reran green. This is the same discipline every prior row's own
+non-vacuousness check has used.
+
+**Two tests, not one**, because a single "it ran" assertion would have
+missed CHN-17's own idempotent-approval behaviour, which is exactly the
+kind of "this looks done but silently sends unapproved" bug this row's
+"no undocumented steps" DoD exists to catch:
+  - a fresh DB's first run for both channels is `awaiting_approval`,
+    with the mock publisher's log file never even created (proof
+    nothing was silently sent);
+  - approving both proposals and re-running the SAME day publishes
+    (2 log rows); running a LATER day after that auto-approves and
+    publishes with no second human step (2 more log rows, 4 total) --
+    proving `has_ever_published()` is what actually gates this, not
+    `approve()` alone, which the first draft of this test got wrong
+    (see below).
+
+**Errors and fixes while building this row**: the first version of the
+"later day auto-approves" test asserted a later day was `published`
+right after approving the first day's proposal, without re-running the
+first day -- it failed, still `awaiting_approval`, because
+`run_daily_digest_job` only calls `digest_store.mark_published()` on an
+actual successful send, and `has_ever_published()` (the flag that
+decides "does this channel get auto-approved") reads that, not the
+proposal's `approve()` state. Fixed by re-running the approved first
+day (which then genuinely publishes) before asserting anything about
+the second day -- the corrected test is the one now committed. The
+first attempt at the `ScriptedGateway` also failed once, returning the
+classifier's `{"label", "confidence"}` shape for every call including
+the daily-summary-section request, which needs `{"lines": [...]}`
+(`DailySummarySectionDraft`) -- fixed by branching on
+`tool_choice["name"]` (`"classification"` vs. anything else,
+`generate_structured`'s own `tool_name` parameter), returning an empty,
+schema-valid `{"lines": []}` for the summary case (no minimum length on
+`DailySummarySectionDraft.lines`, and an honest empty section is this
+module's own documented legitimate output, not a shortcut).
+
+**What was NOT done by me, and why (this row's own Owner column says
+"Human")**: I did not set a real `ANTHROPIC_API_KEY` and personally run
+`make run` against my own live model call -- this project's standing
+verification rule is that a live Anthropic call is never part of my own
+verification, and I have no key of my own to use anyway. What I
+verified instead, directly on this machine: `make install` / `make
+seed` / `make run` reach the classifier/summary's model-call boundary
+cleanly with zero `GRAPH_*` variable ever read anywhere on the path
+(confirmed by reading `p1.adapters.factory.get_teams_reader` /
+`get_teams_publisher`, both defaulting to mock with no Graph import
+touched); and the full pipeline genuinely runs to completion, digest
+and all, under the two committed tests above using a scripted (never
+live) gateway. The one thing only a human can actually witness --
+`make run` producing a real, model-written digest end to end with a
+real key -- is exactly what CHN-31's own Owner column assigns to you: a
+clean `git clone` into any fresh directory, `cp .env.example .env` with
+your real `ANTHROPIC_API_KEY` filled in (nothing else), then `make
+install && make seed && make run`.
+
+**Alternatives considered**: building a genuinely fake, no-external-call
+demo gateway (so `make run` needed zero credentials of any kind,
+matching "reproducible" in the most literal possible sense) --
+rejected, because a demo that fakes its own core capability isn't proof
+the real flow works, and the row's own guidance names *Graph* tenant
+access specifically, not the LLM call this product's actual value comes
+from. Wiring `p1.publishing.scheduler` into a real standalone
+long-running process so `make run` became indistinguishable from
+production -- rejected as materially larger, unrelated new work; C7's
+Status table caveat already names this honestly as separate, undone
+work.
