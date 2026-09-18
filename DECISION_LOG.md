@@ -2144,3 +2144,83 @@ CHN-32's own script docstring makes a point of exercising
 production wiring GC5 proves, "not a second, demo-only code path" --
 patching the test around the bug would have undermined that claim
 instead of fixing it.
+
+## 2026-09-18 -- CHN-01's own "next step," finally built: the device-code sign-in script
+
+**Finding.** CHN-01's entry above already named this exact next step
+("run a device-code-flow script to fetch one real Teams channel
+message via Graph") -- but no such script existed anywhere in the
+repo: no `msal` dependency, no file. One test docstring
+(`tests/live/test_chn09_live_classification.py`) even referenced this
+step as though it were already handled. It wasn't. Surfaced while
+answering the user's question about what's actually left before a
+live demo is possible, not discovered by building toward a row.
+
+**What was built.** `scripts/graph_login.py`: runs Microsoft's own
+device-code sign-in flow via `msal.PublicClientApplication` (added as
+a new dependency, `msal>=1.39.0`), using `AZURE_TENANT_ID` /
+`AZURE_CLIENT_ID` from `.env`, and writes the resulting access token
+into `.env`'s `GRAPH_ACCESS_TOKEN` line in place (every other line
+untouched). `scripts/graph_smoke_test.py`: a deliberately tiny,
+read-only next step -- lists the real channels a token/team can see,
+then previews (author + timestamp only, never message text) one page
+of real messages, but only for a channel_id already on this repo's own
+allowlist, enforcing the same allow-by-default-refuse discipline
+CHN-04's scope gate enforces everywhere else, even though this script
+talks to Graph directly and doesn't go through `ScopedTeamsReader`.
+Neither script touches ingestion, detection, digests, nudges, or
+anything that sends. Both are unit-tested (`tests/unit/test_graph_login.py`,
+`tests/unit/test_graph_smoke_test.py`) against a fake MSAL app / fake
+`GraphTeamsReader` respectively -- no real network call, no real
+interactive login, ever happens under pytest, the same "written,
+tested against a fake, never run live" discipline as `GraphTeamsReader`
+and `PowerAutomateTeamsPublisher` themselves.
+
+**Judgment calls, flagged.** (1) No `AZURE_CLIENT_SECRET` is used or
+requested anywhere in this path -- a device-code flow is Microsoft's
+public-client (secret-less) login mechanism by design, so the
+`.env.example` field of that name is for a different, not-yet-built
+flow, not this one; this needs the app registration's "Allow public
+client flows" setting turned on, which is an Azure-portal action nobody
+has confirmed yet. (2) `graph_login.py` mints a short-lived (~1 hour)
+token and stops there -- it does not attempt silent token refresh,
+token caching, or any unattended renewal; re-running the script by
+hand is the whole story for now. A real always-connected setup would
+want MSAL's token cache and a refresh strategy, deliberately deferred
+rather than guessed at here. (3) The user chose (via direct question)
+to point the very first live test at a real project channel rather
+than a dedicated sandbox channel -- `graph_smoke_test.py`'s
+allowlist-gated, read-only, no-message-text design is shaped
+specifically around that choice, to keep the actual first live touch
+as low-risk as it can be regardless.
+
+**Non-vacuousness (bug injection).** `write_token_to_env`'s in-place
+`.env` rewrite: first draft of `main()` called it without passing
+`env_path`, so it silently used the real module-level default instead
+of a test's monkeypatched path -- caught immediately by
+`test_main_happy_path_writes_env_and_reports_expiry` failing exactly
+that way (asserting the token landed in a tmp file, finding the tmp
+file untouched). Fixed by having `main()` pass `env_path=ENV_PATH`
+explicitly. Bug-injected the revert afterward to confirm: reverting
+that one line reproduces the identical failure, restoring it passes
+again. Ran the full suite with `data/` moved aside entirely (a true
+clean-clone simulation, learned from the CHN-32 CI fix immediately
+above this entry) -- 413 passed, 2 skipped, before restoring the real
+`data/` directory and confirming normal behaviour is unchanged. Ruff
+clean throughout.
+
+**Not done, on purpose.** Wiring a real Team/channel into
+`config/channels/*.yaml`, flipping `TEAMS_READER_MODE=graph` for the
+actual pipeline, and building real member-sync into
+`sync_all_allowlisted_channels` (the pre-existing, separately disclosed
+gap noted in CHN-31/CHN-32's own entries) are all still explicitly
+deferred to their own next steps, gated on admin consent actually
+landing first -- building further on top of an unconfirmed permission
+would be guessing, not building.
+
+**Alternatives considered.** A client-credentials (app-only secret)
+flow instead of device-code -- rejected, since CHN-01 explicitly chose
+delegated permissions via a real signed-in identity ("Option A"), and
+a secret-based flow would silently reintroduce the tenant-wide,
+higher-consent-bar shape ("Option B") that decision deliberately
+avoided.

@@ -75,7 +75,7 @@ Two more surfaces sit alongside C1 and C8 but aren't their own numbered capabili
 
 ## Key decisions and scope cuts
 
-**CHN-01 — the Graph permission model.** Delegated `ChannelMessage.Read.All` via a dedicated service account added as a member of each allowlisted channel ("Option A"), not the tenant-wide application permission ("Option B"). Option A needed only tenant admin consent; Option B would also have needed Microsoft's Teams-export protected-API approval and may be metered, for a broader (tenant-wide) grant than this agent actually needs. Full detail, including the Azure app registration and the outstanding consent request, is in `DECISION_LOG.md`'s CHN-01 entry. Status: admin consent is still pending, so `GraphTeamsReader` -- written and unit-tested against a mocked Graph API -- has never read a real message; per Gate G0b's own rule, every capability above was built and proven against `MockTeamsReader` regardless, and needs only a config flip (`TEAMS_READER_MODE=graph`, plus `GRAPH_ACCESS_TOKEN`/`GRAPH_TEAM_ID` -- see `src/p1/adapters/factory.py`) once consent lands, no agent-logic changes.
+**CHN-01 — the Graph permission model.** Delegated `ChannelMessage.Read.All` via a dedicated service account added as a member of each allowlisted channel ("Option A"), not the tenant-wide application permission ("Option B"). Option A needed only tenant admin consent; Option B would also have needed Microsoft's Teams-export protected-API approval and may be metered, for a broader (tenant-wide) grant than this agent actually needs. Full detail, including the Azure app registration and the outstanding consent request, is in `DECISION_LOG.md`'s CHN-01 entry. Status: admin consent is still pending, so `GraphTeamsReader` -- written and unit-tested against a mocked Graph API -- has never read a real message; per Gate G0b's own rule, every capability above was built and proven against `MockTeamsReader` regardless, and needs only a config flip (`TEAMS_READER_MODE=graph`, plus `GRAPH_ACCESS_TOKEN`/`GRAPH_TEAM_ID` -- see `src/p1/adapters/factory.py`) once consent lands, no agent-logic changes. The device-code sign-in script this entry's own "next step" named was, for a while, never actually built -- see "Connecting to a real Microsoft Team" below for where that stands now.
 
 **Every other deliberate scope cut**, in build order (full reasoning for each is in `DECISION_LOG.md`):
 
@@ -133,6 +133,43 @@ but does not resolve against a live Teams tenant -- CHN-01's Graph
 consent is still pending (see Status above). The script prints an
 explicit on-camera narration cue for this rather than leaving it to be
 discovered mid-recording.
+
+## Connecting to a real Microsoft Team
+
+Two scripts exist to move from the mock adapter to a real one, once
+CHN-01's tenant admin consent is granted (see Status and Key decisions
+above -- neither of these can succeed before that):
+
+    uv run python scripts/graph_login.py        # one-time-per-hour device-code sign-in
+    uv run python scripts/graph_smoke_test.py    # read-only: proves the live connection works
+
+`graph_login.py` runs Microsoft's own device-code sign-in flow -- it
+prints a short code and a URL, you sign in normally in any browser
+with an account that's a member of the target channels, and it writes
+the resulting access token straight into `.env`'s `GRAPH_ACCESS_TOKEN`
+(every other line left untouched). It needs `AZURE_TENANT_ID` and
+`AZURE_CLIENT_ID` set in `.env` first (the client ID is the already-registered
+`p1-teams-intelligence` app, `1e9e359c-8cd0-4554-9cfd-552d837bd7a8`), and
+the app registration's "Allow public client flows" setting must be on,
+since a device-code flow is a secret-less, public-client login by
+design -- no `AZURE_CLIENT_SECRET` is used anywhere in this path. The
+token is short-lived (about an hour); re-run this script to refresh it.
+
+`graph_smoke_test.py` is deliberately the smallest possible next step:
+given `GRAPH_ACCESS_TOKEN` and `GRAPH_TEAM_ID` (the Team's M365 Group
+ID -- the `groupId` query parameter in a channel's own "Get link to
+channel" URL, no separate lookup needed) in `.env`, it lists the real
+channels Graph can see for that team, and -- only for a channel_id
+that's also in this repo's own allowlist (`config/channels/*.yaml`,
+`allowlisted: true`) -- fetches and previews one real page of messages
+(author and timestamp only, never full message text). It never touches
+ingestion, detection, digests, nudges, or anything that sends -- its
+only job is proving the live read path works in isolation before
+anything else is allowed to depend on it. Both scripts are unit-tested
+against a fake MSAL app / fake reader (`tests/unit/test_graph_login.py`,
+`tests/unit/test_graph_smoke_test.py`) -- neither has ever made a real
+network call under test, the same discipline as `GraphTeamsReader`
+itself.
 
 ## AI assistance
 
