@@ -686,3 +686,43 @@ Decision: GC6's scenario seeds a digest already published on the day before the 
 Context/reasoning: the row's own acceptance test implies exactly one real send happened ("the write log shows the two suppressed attempts" -- two, not three) alongside one digest. A fresh channel run three times would produce three pending refusals and zero sends, which technically has "the digest exists once" but would not demonstrate publish idempotency around an actual send at all -- the more interesting and more representative case for a channel already past onboarding.
 
 Alternatives considered: pre-approving a fresh channel's first-day proposal directly via ProposalStore before calling the job -- rejected in favor of the already-published-yesterday setup, since it exercises has_ever_published()'s real auto-approval path (the actual mechanism CHN-17 built) rather than bypassing it with a manually-forced approval that isn't how any real proposal reaches APPROVED on a subsequent day.
+
+## 2026-09-18 -- CHN-19: A week is a fixed 7-day window ending on an explicit `week_end` argument
+
+**Decision:** `week_bounds(week_end)` always returns a 7-calendar-day window `[week_end - 6 days, week_end]`. `week_end` is a plain function argument everywhere in `p1.reporting.weekly_facts`/`weekly_summary` -- there is no hidden `date.today()` read anywhere in the module.
+
+**Context/reasoning:** This mirrors CHN-17's `is_due(config, moment)` clock-override pattern exactly, for the same reason: a fact-gathering function that silently reads the wall clock cannot be tested deterministically and cannot be re-run for a past week to backfill or audit. Every test in `test_weekly_facts.py` and `test_weekly_summary.py` passes a fixed `WEEK_END` and gets a fixed answer.
+
+**Alternatives considered:** Deriving `week_start`/`week_end` from a `weekly_digest_day` config field and "now" was rejected -- it would couple fact-gathering to the scheduler's own concern (when the job happens to fire) rather than to what a week means, and would make every test time-dependent.
+
+## 2026-09-18 -- CHN-19: Excepted roster members are absent from `participation`, never given a rate of 0
+
+**Decision:** A member listed in `config.exceptions` does not appear as a key in the dict `member_participation()`/`participation_trend()` return at all. `gather_weekly_facts()` reports them separately, in `excluded_members`, alongside their stated reason.
+
+**Context/reasoning:** A rate of 0% for someone on leave is a false claim about non-participation; the honest fact is "not measured," not "measured at zero." This also matches how the rendered roll-up needs to read: "carol: excluded (On leave)" rather than a misleading "carol: 0%" sitting next to real numbers.
+
+**Alternatives considered:** Giving excepted members `rate=None` inside the same dict (rather than omitting the key) was considered, but rejected because it would require every consumer to remember to check for both "excepted" and "zero working days this week" (a separate, real `None` case) as distinct meanings collapsed into the same sentinel.
+
+## 2026-09-18 -- CHN-19: "Recurring blocker" is a mechanical, code-checkable rule, not a model judgment
+
+**Decision:** A recurring blocker is: the same roster author, raising a blocker-labeled message, on two or more distinct local calendar days within the current week only. No topic clustering, no similarity scoring -- just author + label + distinct day count.
+
+**Context/reasoning:** The row's own framing is "every quantitative claim recomputable from stored messages," and a model-based judgment of "is this the same underlying blocker as three days ago" is not recomputable by hand. A mechanical day-count rule is exactly what a person skimming the raw messages table could verify themselves, which is the bar this whole capability is held to.
+
+**Alternatives considered:** Clustering by message similarity or by explicit thread-linking was rejected as both unnecessary (the WBS row asks only for "recurring," not "the same specific issue") and untestable in the same deterministic way.
+
+## 2026-09-18 -- CHN-19: "Unanswered all week" is scoped to the week's own window, deliberately narrower than CHN-13's real-time check
+
+**Decision:** A question counts as "went unanswered all week" if no non-deleted reply exists with `posted_at <= week_end`. A reply that arrives the following week does not retroactively remove the question from this week's list.
+
+**Context/reasoning:** CHN-13's daily "still awaiting an answer" check is a real-time question ("is anyone waiting on an answer right now") and rightly looks at all replies ever, regardless of date. CHN-19's claim is different in kind: "went unanswered all week" is a historical claim about that specific week, and a reply that shows up later does not make that claim false -- it was still true that, during that week, nobody had answered yet. Keeping this distinct from CHN-13 was a deliberate divergence, not an inconsistency, and is exercised directly by `test_a_reply_that_arrives_the_following_week_does_not_count`.
+
+**Alternatives considered:** Reusing CHN-13's real-time check unmodified was rejected because it would make a past week's roll-up mutate its own answer retroactively every time this job re-runs later, which contradicts what "went unanswered all week" is supposed to mean as a permanent historical fact about that week.
+
+## 2026-09-18 -- CHN-19: The no-digits rule on the narrative is a pydantic validator, not just a prompt instruction
+
+**Decision:** `WeeklyNarrativeDraft.narrative` carries a `@field_validator` that raises `ValueError` on any digit character, feeding directly into `generate_structured()`'s existing retry-on-validation-failure loop.
+
+**Context/reasoning:** The row's own acceptance framing is "rates and trends are computed, never estimated by a model" -- if this were only a prompt instruction, a model that ignored it would silently ship a restated (and possibly wrong) figure into the final roll-up, with no mechanical way to catch it. Making it a validator turns a qualitative prompt-engineering hope into something `test_narrative_with_a_digit_is_rejected_and_retried` can actually prove, and costs no new plumbing since `generate_structured` already retries on `ValidationError` for CHN-13's structured drafts.
+
+**Alternatives considered:** Post-processing the model's output to strip digits after the fact was rejected -- silently mangling a sentence the model wrote is worse than asking it again, and would hide a bad instruction-following pattern rather than surfacing it.
