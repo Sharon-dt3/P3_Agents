@@ -2385,3 +2385,82 @@ own plain-`httpx` style) -- rejected, since `anthropic`'s own
 officially supported path, and sharing `_call_messages_api` with the
 direct-Anthropic path means the request-building/retry/parsing logic
 genuinely only has to be correct once, not maintained twice.
+
+## 2026-09-18 -- CHN-01's real test channel added; a real regression found and fixed along the way
+
+**Finding.** Added `config/channels/p1-agent-test.yaml` -- a genuine
+third allowlisted channel (the user's own real Teams channel, created
+specifically to test this project against), alongside the existing two
+fixture-style channels (`proj-alpha`, `proj-beta`). Roster is real (one
+person: the channel creator), timezone `Asia/Colombo`, update window
+08:00-17:00 -- all user-supplied. Digest timing, working days, and
+`nudge_enabled: false` are defaults matching the other test channels,
+not yet confirmed by the user; flagged to her as adjustable.
+
+Doing this surfaced a real, previously-latent bug, found the honest
+way -- by breaking the test suite, not by hunting for it. Earlier in
+this same session, `TEAMS_READER_MODE=graph` was written into `.env`
+(intended to prepare for a real Graph connection once the user's
+sign-in and admin consent land). That single `.env` change alone,
+independent of this channel addition, made the full test suite attempt
+a REAL network call to Microsoft Graph: `scripts/run_daily.py`,
+`scripts/run_walkthrough.py`, and the tests that exercise them all
+build their reader via `p1.adapters.factory.get_teams_reader()`, which
+reads `TEAMS_READER_MODE` straight from `os.environ` with no test-time
+override -- so with that var set to `graph` in `.env`, every one of
+those tests tried to construct a real `GraphTeamsReader` against the
+placeholder `GRAPH_ACCESS_TOKEN=live-token` and hit this environment's
+egress proxy (`httpx.ProxyError: 403 Forbidden`) instead of a mocked
+reader. This is exactly the class of thing this project's own standing
+rule exists to prevent (a live external call sneaking into
+verification) -- caught here only because the sandboxed proxy refused
+the request; against a real, permissive network it would have
+attempted a genuine unauthenticated call to Microsoft's servers from
+inside a test run.
+
+**Fix, this session.** Removed `TEAMS_READER_MODE` from `.env` again
+(reverted to unset, which defaults to `mock` -- see `factory.py`).
+Confirmed this alone fixed 5 of the 7 failures the full suite showed.
+
+**The remaining 2 failures were real, and about this row's own change.**
+`tests/unit/test_run_daily_full_flow.py` hardcodes an assertion that
+the real, full-flow demo touches exactly `{proj-alpha, proj-beta}` and
+never gamma -- by design, proving the demo respects the real
+allowlist. Adding a genuine third allowlisted channel made that
+assertion stale, correctly: the demo now (correctly) also touches
+`p1-agent-test`. Updated both tests in that file: renamed
+`test_run_full_flow_runs_both_allowlisted_channels_end_to_end` to
+`test_run_full_flow_runs_all_allowlisted_channels_end_to_end` (the name
+`...both...` was no longer true), widened the expected channel set to
+include the new channel, and updated the second test's approval loop
+and published-count assertions (2 -> 3 per day) to match. This is not a
+production bug -- production code is working exactly as designed; the
+test's own hardcoded expectation was what fell out of date.
+
+**Judgment calls.** (1) Renamed the first test rather than leaving a
+now-inaccurate name in place -- checked first that nothing in
+README.md or DECISION_LOG.md references that test by name. (2) Did NOT
+harden `get_teams_reader()`/the test suite against `TEAMS_READER_MODE`
+being read from the real, live `.env` -- that's a real, still-open gap
+(any future real `.env` change to this var will silently affect the
+test suite again), but fixing it (e.g. tests explicitly forcing mode to
+`mock` regardless of `.env`, or the test suite loading a separate,
+test-only env file) is a genuine design decision of its own, not
+something to fold silently into this row. Flagged to the user directly
+rather than built unasked.
+
+**Non-vacuousness.** This one didn't need synthetic bug injection --
+the regression was real, observed directly (7 real failures, not a
+staged one), diagnosed to its true root cause (confirmed by removing
+just the `.env` line and rerunning), and the remaining 2 failures were
+independently confirmed to be caused specifically by the new channel
+config (by reading their assertions, not guessing). Full suite: 431
+passed, 2 skipped, ruff clean, both with and without a clean-clone
+simulation (`data/` moved aside and restored).
+
+**Not done, on purpose.** `TEAMS_READER_MODE` stays unset (mock) in
+`.env` for now -- it should only be set to `graph` right before an
+actual intended live run against Teams (e.g. once the user has a real
+`GRAPH_ACCESS_TOKEN` and wants to run `scripts/graph_smoke_test.py` or
+`make run` for real), not left set permanently, until the test-isolation
+gap above is separately fixed.
