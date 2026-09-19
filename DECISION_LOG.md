@@ -3424,3 +3424,94 @@ only real message that day is the bot-authored smoke-test post,
 excluded by `ignore_bots: true` per CHN-23's own finding). A real,
 human-authored message posted into the actual channel is still needed
 for this pipeline to produce a non-empty digest.
+
+## 2026-09-19 -- CHN-25: a second, more serious identity bug found before it could waste a real Teams post -- author_id from Graph is a GUID, roster is written as an email
+
+**Finding.** While preparing to seed `p1-agent-test` with real, human
+test content, re-read `GraphTeamsReader._parse_message()`
+(`src/p1/adapters/teams_reader_graph.py`) to confirm what a real human
+message would actually look like once ingested. It sets
+`author_id = (item.get("from") or {}).get("user", {}).get("id")` --
+Microsoft Graph's Azure AD **object ID** (a GUID) -- never an
+email/UPN string. Every channel config's roster
+(`config/channels/p1-agent-test.yaml`'s `["SharonS@digitalt3.com"]`
+included) was written as an email, matching the mock reader's fixture
+convention that every prior test and demo has used. `_rule_not_on_roster`
+does an exact string match. Put together: a genuine, human-typed
+message from the right person, in the right channel, would still have
+been silently classified as noise -- not because of anything about the
+message's content, but because the identifier format the real reader
+produces has never matched the identifier format every channel config's
+roster was written in. `GraphTeamsReader` had never been exercised
+against a live tenant before this week (its own module docstring said
+so), so nothing had ever exposed this until now.
+
+Caught before any real content was posted to test it -- the user had
+asked to seed the real `p1-agent-test` channel with many test messages
+to compensate for having no real conversational history there, and
+this was found while checking whether that would actually work, not
+after wasting a batch of real Teams posts on a broken roster match.
+
+**A related, already-understood dead end also confirmed while
+investigating.** Messages posted through the Power Automate flow
+arrive at Graph with `from.application` set (not `from.user`), which
+`_parse_message` maps to `is_bot=True`; with `ignore_bots: true`, any
+volume of Power-Automate-posted content will always be classified
+noise. This isn't new -- CHN-23's own docstring already predicted the
+one existing bot-authored message would be excluded -- but it means
+posting *more* test content through the write path this session
+already built would not have helped either. Real signal can only ever
+come from a message a human actually typed directly into Teams.
+
+**What was built.** `scripts/graph_whoami.py`: a small, read-only
+diagnostic that calls Graph's `/me` with the existing
+`GRAPH_ACCESS_TOKEN` and prints the account's real AAD object id
+alongside its `userPrincipalName`/`displayName`/`mail` -- so the actual
+GUID a real message will carry can be read directly, rather than
+guessed at, before deciding how to fix the roster mismatch.
+`tests/unit/test_graph_whoami.py` (4 tests, same fake-`http_get`-seam
+discipline as `test_graph_smoke_test.py`'s `reader_factory` seam) --
+never opens a real Graph connection.
+
+**Judgment calls.** Did not attempt to fix the roster-format mismatch
+itself in this entry -- how to resolve it is genuinely ambiguous and
+affects every channel config going forward, not just this test
+channel:
+- storing the real AAD object GUID directly in each channel's roster
+  (works today, no new Graph permission needed, but roster entries
+  stop being human-readable);
+- resolving GUID -> UPN/email at classification time via an extra
+  Graph call (`GET /users/{id}`, needs a scope like `User.ReadBasic.All`)
+  -- keeps roster human-readable, but CHN-01's DECISION_LOG entries
+  already document that this tenant requires admin consent for any new
+  permission grant beyond the one already approved
+  (`ChannelMessage.Read.All`), and that admin consent has been a real,
+  ongoing blocker for other permissions this session never got past;
+  this option may hit the identical wall.
+This needs the user's own decision (which format the roster should
+hold, and whether pursuing the second admin-consent grant is worth
+attempting again), not a unilateral pick -- flagged to her directly
+rather than silently choosing one.
+
+**Non-vacuousness.** Injected the real bug this test suite guards
+against (renamed the `id` field being read to a nonexistent key) and
+confirmed `test_run_whoami_prints_the_real_identity_fields` failed with
+the expected missing value; reverted and re-confirmed all 4 tests
+green.
+
+**Verified.** `uv run pytest tests/unit/test_graph_whoami.py`: 4
+passed. Full suite: 453 passed, 2 skipped, ruff clean, plus the same
+one pre-existing, already-documented, unrelated
+`test_approval_dashboard_app.py` order-dependent flake (unchanged by
+this entry).
+
+**Not done, on purpose.** The roster-format mismatch itself is not yet
+fixed -- `scripts/graph_whoami.py` is a diagnostic, not a fix. No real
+message has been posted into `p1-agent-test` by a human yet. The next
+step is running `scripts/graph_whoami.py` for real to get the actual
+GUID, deciding with the user which of the two options above to take,
+then updating `config/channels/p1-agent-test.yaml`'s roster (and,
+eventually, the roster-format story for every other channel config)
+accordingly -- only after that should real human test messages be
+posted, so they're not wasted against a roster that still can't match
+them.
