@@ -11,6 +11,7 @@ a style complaint. One shared place means they can't disagree.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -19,12 +20,39 @@ from p1.config.schema import ChannelConfig
 
 WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
+# Matches the fractional-seconds group in an ISO 8601 timestamp, e.g.
+# the ".35" in "2026-09-16T10:49:31.35+00:00".
+_FRACTIONAL_SECONDS_RE = re.compile(r"\.(\d+)")
+
 
 def parse_instant(value: str) -> datetime:
-    """Parse an ISO 8601 timestamp, tolerating a trailing 'Z' (UTC) the
-    way datetime.fromisoformat on Python 3.10 does not."""
+    """Parse an ISO 8601 timestamp, tolerating two real shapes
+    datetime.fromisoformat on Python 3.10 rejects outright:
+
+    - a trailing 'Z' (UTC), which 3.10's fromisoformat does not accept
+      directly (relaxed in 3.11+, but this repo runs on 3.10);
+    - a fractional-seconds component whose length isn't exactly 3 or 6
+      digits. 3.10's fromisoformat is stricter than ISO 8601 itself
+      requires here -- and both shapes it rejects are real, not
+      hypothetical: Microsoft Graph's own dateTimeOffset format uses 7
+      digits (.NET's 100ns ticks, e.g. "2019-07-12T15:00:00.0000000Z"),
+      while at least one message already ingested into this system's
+      own live database carries a 2-digit fraction ("...31.35Z") --
+      whatever produced that value, Python must still be able to parse
+      it. Any digit count is normalized to 6 (microseconds), padding a
+      short fraction with trailing zeros and truncating a long one --
+      datetime itself only stores microsecond precision, so truncating
+      Graph's sub-microsecond tick digits loses nothing Python could
+      have kept anyway. See DECISION_LOG.md for the crash this fixes.
+    """
     if value.endswith("Z"):
         value = value[:-1] + "+00:00"
+
+    match = _FRACTIONAL_SECONDS_RE.search(value)
+    if match:
+        normalized = (match.group(1) + "000000")[:6]
+        value = value[: match.start()] + "." + normalized + value[match.end() :]
+
     return datetime.fromisoformat(value)
 
 

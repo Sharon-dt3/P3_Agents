@@ -3353,3 +3353,74 @@ real-vs-drop decision remains open; the standalone always-on scheduler,
 the Copilot Studio Dataverse config table, a real public host for
 `copilot_studio_api.py`, and CHN-33 (spine extraction for P2/P3) are
 all still outstanding, unchanged by this entry.
+
+## 2026-09-19 -- CHN-24: a real crash on the first live run of the full pipeline -- `parse_instant` couldn't handle real-world fractional-second lengths
+
+**What happened.** The very first real run of
+`scripts/run_live_pipeline_p1_agent_test.py` against the actual
+`p1-agent-test` channel (after refreshing the Graph token via
+`scripts/graph_login.py`) crashed inside digest generation:
+
+```
+ValueError: Invalid isoformat string: '2026-09-16T10:49:31.35+00:00'
+```
+
+**Root cause.** `p1.config.calendar.parse_instant` already tolerated a
+trailing `Z` (Python 3.10's `datetime.fromisoformat` doesn't accept it
+directly), but had no equivalent tolerance for fractional-seconds
+length: 3.10's `fromisoformat` only accepts a fractional component of
+*exactly* 3 or 6 digits, not any other count. The one real message
+already stored in `data/p1_live.db` --
+`scripts/power_automate_smoke_test.py`'s own earlier test post --
+carries `posted_at="2026-09-16T10:49:31.35Z"`, a 2-digit fraction, and
+crashed immediately. This wasn't a one-off oddity to special-case
+around either: Microsoft Graph's own `dateTimeOffset` format uses 7
+digits (.NET's 100ns ticks, e.g. `"2019-07-12T15:00:00.0000000Z"`),
+which 3.10's `fromisoformat` rejects just as hard. Every real message
+this pipeline will ever ingest from Graph was going to hit this same
+crash the moment a human message actually reached the digest step --
+the bot-only content just meant it hadn't been triggered until this
+run. This is confirmed, not hypothetical: verified directly against
+this repo's own Python 3.10.12 interpreter (`datetime.fromisoformat`
+rejects both `'...31.35+00:00'` and `'...31.3500000+00:00'`, accepts
+only `'...31.350+00:00'`/`'...31+00:00'`).
+
+**Fix.** `parse_instant` now normalizes any fractional-seconds length
+to exactly 6 digits (microseconds) before calling `fromisoformat`:
+padding a short fraction with trailing zeros, truncating a long one.
+Truncating Graph's sub-microsecond tick digits loses nothing Python's
+own `datetime` could have kept anyway (it only stores microsecond
+precision). The trailing-`Z` handling is unchanged.
+
+**Judgment calls.** Fixed in place rather than only disclosed -- this
+is a parsing-correctness bug in a shared, already-tested utility
+function, not a design question. Truncating (rather than rejecting)
+sub-microsecond digits was chosen over raising on "too many digits":
+`datetime` cannot represent finer-than-microsecond precision at all,
+so refusing to parse a real, valid Graph timestamp over precision
+Python could never have used anyway would only trade one crash for
+another, more confusing one.
+
+**Non-vacuousness.** Directly observed, not injected, for the original
+crash (a real production run failed with this exact error). For the
+fix itself: temporarily restored `parse_instant`'s pre-fix body,
+re-ran `tests/unit/test_calendar.py`, and confirmed the two new tests
+(`test_parse_instant_handles_a_short_fractional_second`,
+`test_parse_instant_handles_microsoft_graphs_own_seven_digit_fraction`)
+failed with the identical `ValueError` this entry describes; reverted
+and re-confirmed all 9 tests in that file green.
+
+**Verified.** `uv run pytest tests/unit/test_calendar.py`: 9 passed.
+Full suite: 449 passed, 2 skipped, ruff clean, plus the same one
+pre-existing, already-documented, unrelated
+`test_approval_dashboard_app.py::test_dashboard_lists_and_approves_a_pending_nudge`
+order-dependent flake (unchanged by this entry).
+
+**Not done, on purpose.** The live pipeline has not yet been re-run
+against the real channel since this fix -- that's the immediate next
+step, and it should now get past digest generation (though it will
+still report 0 signal for 2026-09-16 specifically, since that channel's
+only real message that day is the bot-authored smoke-test post,
+excluded by `ignore_bots: true` per CHN-23's own finding). A real,
+human-authored message posted into the actual channel is still needed
+for this pipeline to produce a non-empty digest.

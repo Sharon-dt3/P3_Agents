@@ -31,6 +31,33 @@ def test_parse_instant_handles_trailing_z():
     assert parsed.utcoffset().total_seconds() == 0
 
 
+def test_parse_instant_handles_a_short_fractional_second():
+    # A real value already stored in data/p1_live.db
+    # ("2026-09-16T10:49:31.35Z") crashed datetime.fromisoformat on
+    # Python 3.10 with "Invalid isoformat string" -- 3.10 only accepts
+    # a fractional-seconds component of exactly 3 or 6 digits, and this
+    # one has 2. Padded to microseconds (350000), not rounded or
+    # rejected.
+    parsed = parse_instant("2026-09-16T10:49:31.35+00:00")
+    assert parsed.microsecond == 350000
+
+
+def test_parse_instant_handles_microsoft_graphs_own_seven_digit_fraction():
+    # Microsoft Graph's dateTimeOffset format uses 7 digits (.NET's
+    # 100ns ticks), e.g. "2019-07-12T15:00:00.0000000Z" -- also not
+    # exactly 3 or 6 digits, so also rejected outright by 3.10's
+    # fromisoformat before this fix. Truncated to microseconds
+    # (datetime's own limit), not rejected.
+    parsed = parse_instant("2026-09-16T10:49:31.1234567Z")
+    assert parsed.microsecond == 123456
+
+
+def test_parse_instant_still_handles_the_exact_lengths_fromisoformat_always_accepted():
+    assert parse_instant("2025-06-02T09:30:00.500+00:00").microsecond == 500000
+    assert parse_instant("2025-06-02T09:30:00.500000+00:00").microsecond == 500000
+    assert parse_instant("2025-06-02T09:30:00+00:00").microsecond == 0
+
+
 def test_to_local_converts_across_timezones():
     # 09:30 America/New_York is 13:30 UTC.
     local = to_local("2025-06-02T13:30:00Z", "America/New_York")
