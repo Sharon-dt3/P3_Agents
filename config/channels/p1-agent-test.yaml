@@ -3,7 +3,7 @@ display_name: "p1-agent-test"
 allowlisted: true
 
 roster:
-  - "SharonS@digitalt3.com"
+  - "a52e61e5-16c6-4f6c-af67-f41f85e7a00a"  # Sharon Silva (SharonS@digitalt3.com) -- Graph reports author_id as the AAD object id, not the email; see DECISION_LOG.md CHN-25
 
 update_window_start: "08:00:00"
 update_window_end: "17:00:00"

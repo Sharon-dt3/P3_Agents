@@ -61,16 +61,19 @@ class ScriptedGateway:
 
 def _human_message(msg_id: str, posted_at: str) -> TeamsMessage:
     # author_id must exactly match config/channels/p1-agent-test.yaml's
-    # real roster entry ("SharonS@digitalt3.com", capital S) --
-    # detection.rules._rule_not_on_roster is an exact, case-sensitive
-    # string match, not a case-insensitive one. A lowercase mismatch
-    # here was caught by this file's own first real run: it made this
-    # message fall through to _rule_not_on_roster and get classified as
-    # noise instead of reaching the model at all -- see DECISION_LOG.md.
+    # real roster entry. That entry is Sharon's real Azure AD object id
+    # ("a52e61e5-16c6-4f6c-af67-f41f85e7a00a"), not her email -- CHN-25
+    # found that GraphTeamsReader._parse_message() sets author_id from
+    # Graph's from.user.id (an AAD GUID), which a roster written as an
+    # email string can never match. This fixture originally used the
+    # email directly (and, before that, a lowercase-mismatched email --
+    # see this file's own earlier history in DECISION_LOG.md); both
+    # were silently classified as noise by _rule_not_on_roster for two
+    # different reasons before this fix.
     return TeamsMessage(
         id=msg_id,
         channel_id=live_pipeline.CHANNEL_ID,
-        author_id="SharonS@digitalt3.com",
+        author_id="a52e61e5-16c6-4f6c-af67-f41f85e7a00a",
         posted_at=posted_at,
         is_bot=False,
         body="Finished the API integration today, no blockers.",

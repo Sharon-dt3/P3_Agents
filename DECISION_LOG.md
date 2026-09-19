@@ -3515,3 +3515,78 @@ eventually, the roster-format story for every other channel config)
 accordingly -- only after that should real human test messages be
 posted, so they're not wasted against a roster that still can't match
 them.
+
+## 2026-09-19 -- CHN-25 (resolved): roster switched from email to the real Azure AD object id, per the user's own choice
+
+**Decision.** CHN-25 flagged two ways to fix the roster/author_id
+format mismatch and left the choice to the user rather than picking
+unilaterally: store the real AAD object GUID directly in each
+channel's roster (works today, no new permission), or resolve
+GUID -> email automatically via an extra Graph call (keeps roster
+human-readable, but likely needs a new tenant admin-consent grant this
+project has already been blocked on twice). Asked directly; the user
+chose the GUID approach, with an annotation so the file stays
+human-readable despite the value itself being opaque.
+
+**What changed.** Ran `scripts/graph_whoami.py` for real against the
+user's own signed-in account: her Azure AD object id is
+`a52e61e5-16c6-4f6c-af67-f41f85e7a00a` (userPrincipalName/mail both
+confirm it's `SharonS@digitalt3.com`). Updated
+`config/channels/p1-agent-test.yaml`'s `roster` entry from the email
+string to that GUID, with an inline YAML comment naming her and
+pointing at this entry so a future editor doesn't have to go looking
+up whose id it is:
+
+```yaml
+roster:
+  - "a52e61e5-16c6-4f6c-af67-f41f85e7a00a"  # Sharon Silva (SharonS@digitalt3.com) -- Graph reports author_id as the AAD object id, not the email; see DECISION_LOG.md CHN-25
+```
+
+`channel_owner_id` (used only as the escalation job's direct-message
+`target`, a separate write-path concern from roster matching) was
+deliberately left as the email -- untouched, since nothing has shown
+that field is actually broken the same way, and changing it without
+evidence would be guessing rather than fixing a confirmed bug.
+
+**Test fix required as a direct consequence.**
+`tests/unit/test_run_live_pipeline_p1_agent_test.py`'s `_human_message()`
+fixture used the email as `author_id` to match the (now-changed) real
+roster -- this is the third distinct value that fixture has needed
+since it was written this session (first a case-mismatched email,
+then the correctly-cased email, now the real GUID), each one exposing
+a different real gap between the mock-fixture convention and the real
+Graph-sourced identity format. Updated to the same GUID, with a
+comment explaining why.
+
+**A real device-bridge flake hit while applying this fix, worth
+recording.** The first `device_commit_files` call for the updated test
+file reported success but silently left the file unchanged on disk
+(confirmed by `grep`ing the file immediately after and finding the old
+value still there) -- a second `device_commit_files` call with
+`force=true` for the identical content did apply correctly. No data
+was lost and the discrepancy was caught immediately by verifying the
+file's actual content after every commit rather than trusting the
+tool's reported success, which is why this session checks with `grep`
+after every `device_commit_files` call for a file a test's correctness
+depends on.
+
+**Non-vacuousness.** Reverted `_human_message()`'s `author_id` back to
+the email, re-ran the file, and confirmed the exact same failure CHN-25
+predicted (`Classified 1 message(s): 0 signal, 1 noise.`, expected "1
+signal, 0 noise"); reverted back and re-confirmed all 4 tests green.
+
+**Verified.** `uv run pytest tests/unit/test_run_live_pipeline_p1_agent_test.py`:
+4 passed. Full suite: 453 passed, 2 skipped, ruff clean, plus the same
+one pre-existing, already-documented, unrelated
+`test_approval_dashboard_app.py` order-dependent flake (unchanged by
+this entry).
+
+**Not done, on purpose.** No real human message has been posted into
+`p1-agent-test` yet -- that's now unblocked and is the actual next
+step. `channel_owner_id`'s own identity-format correctness (the
+escalation/DM path) remains unverified against a real Graph-sourced
+value and is a separate, still-open question if that path is ever
+exercised for real. This same email-vs-GUID roster format question
+will recur for every future real channel config -- CHN-25/this entry's
+resolution is the pattern to follow (GUID + comment), not a one-off
+special case for `p1-agent-test` alone.
