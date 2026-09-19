@@ -44,7 +44,7 @@ See docs/MASTER_IMPLEMENTATION_PLAN.md for the full six-week, three-agent progra
 
 ## Architecture
 
-**Read path:** `TeamsReader` (an interface -- `MockTeamsReader` today, `GraphTeamsReader` once CHN-01's credential lands, chosen by `p1.adapters.factory.get_teams_reader()`) is wrapped by `ScopedTeamsReader` (`p1.governance.scope_gate`), which enforces the channel allowlist *at the adapter boundary* -- a chat or a non-allowlisted channel is refused before any capability code ever sees it, and every refusal is logged to `audit`. `p1.ingestion.sync` drains delta pages (paging, 429 backoff, delta-token-expiry recovery) into `MessageStore`. `p1.detection.rules` (CHN-08, no model call) settles the clear cases; anything left unsettled goes to `p1.detection.classifier` (CHN-09, schema-forced) -- the model never sees a message a rule already decided. `p1.participation.ledger` (CHN-10) turns the roster and the day's classifications into the three honest non-responder states. `p1.reporting.facts` + `p1.reporting.daily_summary` / `weekly_summary` compute every figure in code and ask the model only for prose, verified line-by-line against the message store by `p1.grounding.kernel` before anything is kept.
+**Read path:** `TeamsReader` (an interface -- `MockTeamsReader` today, `GraphTeamsReader`, live-verified against the real DigitalT3 tenant as of 2026-09-19, chosen by `p1.adapters.factory.get_teams_reader()`) is wrapped by `ScopedTeamsReader` (`p1.governance.scope_gate`), which enforces the channel allowlist *at the adapter boundary* -- a chat or a non-allowlisted channel is refused before any capability code ever sees it, and every refusal is logged to `audit`. `p1.ingestion.sync` drains delta pages (paging, 429 backoff, delta-token-expiry recovery) into `MessageStore`. `p1.detection.rules` (CHN-08, no model call) settles the clear cases; anything left unsettled goes to `p1.detection.classifier` (CHN-09, schema-forced) -- the model never sees a message a rule already decided. `p1.participation.ledger` (CHN-10) turns the roster and the day's classifications into the three honest non-responder states. `p1.reporting.facts` + `p1.reporting.daily_summary` / `weekly_summary` compute every figure in code and ask the model only for prose, verified line-by-line against the message store by `p1.grounding.kernel` before anything is kept.
 
 **Write path:** every outbound action (a digest publish, a nudge, an escalation) first creates a `p1.approval.proposals.Proposal` (state `PENDING`). `p1.approval.write_guard.guarded_send()` is the *one* gate every send goes through, called from `daily_job.py`, `nudge_job.py` and `escalation_job.py` alike (proven never bypassed by GC8) -- it re-confirms `APPROVED` immediately before sending, refuses and logs anything else, and marks the proposal `APPLIED` only after a real send succeeds. A person's or channel's *first-ever* send is left `PENDING` for a human to approve (via `p1.approval.service`, reachable from the Copilot Studio connector or the Streamlit fallback `app/approval_dashboard.py` -- both call the identical service functions, proven by a dedicated equivalence test); afterward it auto-approves within its own cap. The actual send goes through `p1.adapters.teams_publisher` (`LogPublisher` for every test/eval/demo today; `PowerAutomateTeamsPublisher` once a flow is provisioned).
 
@@ -57,7 +57,7 @@ One row per capability from `docs/MASTER_IMPLEMENTATION_PLAN.md`'s own traceabil
 | Cap | Priority | Capability | Status | Verify |
 |---|---|---|---|---|
 | C1 | MUST | Channel registry and per-channel configuration | **Done** | `config/channels/*.yaml` (3 real configs); `src/p1/config/loader.py` (`ChannelConfigStore`, `get_effective_config`, `update_channel_config`); GC12 in `src/p1/eval/chn24_cases.py` (changing the roster and window moves the non-responder set) |
-| C2 | MUST | Teams ingestion via Graph with delta tracking | **Partial** -- code done, live credential pending | `src/p1/adapters/teams_reader_graph.py`, `src/p1/ingestion/sync.py`; GC10 in `src/p1/eval/chn12_cases.py`. Never run against a real tenant -- see CHN-01 in Key decisions |
+| C2 | MUST | Teams ingestion via Graph with delta tracking | **Done** -- live-verified 2026-09-19: a real message read from a real Teams channel and persisted through the real production sync path | `src/p1/adapters/teams_reader_graph.py`, `src/p1/ingestion/sync.py`, `scripts/run_live_ingest_p1_agent_test.py`; GC10 in `src/p1/eval/chn12_cases.py`. See CHN-01 in Key decisions and DECISION_LOG.md's 2026-09-19 entries |
 | C3 | MUST | Scope gate -- allowlist only, chats never read | **Done** | `src/p1/governance/scope_gate.py`; GC5 in `src/p1/eval/chn12_cases.py` |
 | C4 | MUST | Update detection -- rules then classifier | **Done** | `src/p1/detection/rules.py`, `src/p1/detection/classifier.py`; GC1 in `src/p1/eval/chn11_cases.py` (7 of CHN-08's 8 rules have a real ground-truth example as of CHN-28; `non_working_day` is proven instead at the participation-ledger level by `tests/unit/test_participation_edge_cases.py`, CHN-29) |
 | C5 | MUST | Participation ledger and non-responder detection | **Done** | `src/p1/participation/ledger.py`; GC2 in `src/p1/eval/chn11_cases.py`; `tests/unit/test_participation_edge_cases.py` (CHN-29's edge-case pass) |
@@ -75,7 +75,7 @@ Two more surfaces sit alongside C1 and C8 but aren't their own numbered capabili
 
 ## Key decisions and scope cuts
 
-**CHN-01 — the Graph permission model.** Delegated `ChannelMessage.Read.All` via a dedicated service account added as a member of each allowlisted channel ("Option A"), not the tenant-wide application permission ("Option B"). Option A needed only tenant admin consent; Option B would also have needed Microsoft's Teams-export protected-API approval and may be metered, for a broader (tenant-wide) grant than this agent actually needs. Full detail, including the Azure app registration and the outstanding consent request, is in `DECISION_LOG.md`'s CHN-01 entry. Status: admin consent is still pending, so `GraphTeamsReader` -- written and unit-tested against a mocked Graph API -- has never read a real message; per Gate G0b's own rule, every capability above was built and proven against `MockTeamsReader` regardless, and needs only a config flip (`TEAMS_READER_MODE=graph`, plus `GRAPH_ACCESS_TOKEN`/`GRAPH_TEAM_ID` -- see `src/p1/adapters/factory.py`) once consent lands, no agent-logic changes. The device-code sign-in script this entry's own "next step" named was, for a while, never actually built -- see "Connecting to a real Microsoft Team" below for where that stands now.
+**CHN-01 — the Graph permission model.** Delegated `ChannelMessage.Read.All` via a dedicated service account added as a member of each allowlisted channel ("Option A"), not the tenant-wide application permission ("Option B"). Option A needed only tenant admin consent; Option B would also have needed Microsoft's Teams-export protected-API approval and may be metered, for a broader (tenant-wide) grant than this agent actually needs. Full detail, including the Azure app registration and the consent process, is in `DECISION_LOG.md`'s CHN-01 entries. Status: admin consent for `ChannelMessage.Read.All` landed, and as of 2026-09-19 `GraphTeamsReader` has read and persisted a real message from a real Teams channel (`config/channels/p1-agent-test.yaml`) against the real DigitalT3 tenant -- see `scripts/run_live_ingest_p1_agent_test.py` and DECISION_LOG.md's 2026-09-19 entries for the full path there, including two permission-scope corrections along the way (a second Graph permission, `Channel.ReadBasic.All`, was requested and then designed back out entirely, once `p1.ingestion.sync.sync_all_allowlisted_channels()` was changed to read its channel list from config rather than from Graph's own `list_channels()` -- so `ChannelMessage.Read.All` alone is now sufficient for everything live). Every capability above was originally built and proven against `MockTeamsReader` per Gate G0b's own rule, and the flip to `GraphTeamsReader` needed only a config change (`TEAMS_READER_MODE=graph`, plus `GRAPH_ACCESS_TOKEN`/`GRAPH_TEAM_ID` -- see `src/p1/adapters/factory.py`), no agent-logic changes -- confirmed, not just designed that way. Two of this repo's three allowlisted channels (`proj-alpha`, `proj-beta`) are still mock-fixture ids, not real Graph channels -- see "Connecting to a real Microsoft Team" below for where that stands and what it means for a full (not single-channel) live ingestion run.
 
 **Every other deliberate scope cut**, in build order (full reasoning for each is in `DECISION_LOG.md`):
 
@@ -126,23 +126,28 @@ own next step for the eval-output beat, and close by naming your own
 view of the weakest part -- that's the recording's job, not this
 script's.
 
-**Live-permalink caveat**, same one C2/CHN-22 already name: every
-permalink in this walkthrough (e.g.
+**Live-permalink caveat.** Every permalink in this walkthrough (e.g.
 `https://teams.microsoft.com/l/message/19:proj-alpha@thread.tacv2/proj-alpha-0001`)
 is well-formed and traces to a real message in this repo's own store,
-but does not resolve against a live Teams tenant -- CHN-01's Graph
-consent is still pending (see Status above). The script prints an
-explicit on-camera narration cue for this rather than leaving it to be
-discovered mid-recording.
+but does not resolve against a live Teams tenant. This is no longer
+because Graph consent is pending (see Status above -- it has landed,
+and a real live read/ingest has been proven) -- it's simply because
+`proj-alpha` and `proj-beta`, the two channels this walkthrough uses,
+are mock-fixture channel_ids that were never real Teams channels to
+begin with. A walkthrough run against `p1-agent-test` instead (the
+one channel that is real) would produce permalinks that do resolve.
+The script prints an explicit on-camera narration cue for this rather
+than leaving it to be discovered mid-recording.
 
 ## Connecting to a real Microsoft Team
 
-Two scripts exist to move from the mock adapter to a real one, once
-CHN-01's tenant admin consent is granted (see Status and Key decisions
-above -- neither of these can succeed before that):
+Three scripts move from the mock adapter to a real one. CHN-01's
+tenant admin consent has landed (see Status and Key decisions above),
+so all three work today:
 
-    uv run python scripts/graph_login.py        # one-time-per-hour device-code sign-in
-    uv run python scripts/graph_smoke_test.py    # read-only: proves the live connection works
+    uv run python scripts/graph_login.py                    # one-time-per-hour device-code sign-in
+    uv run python scripts/graph_smoke_test.py                # read-only: proves the live connection works
+    uv run python scripts/run_live_ingest_p1_agent_test.py   # actually persists a real ingest, scoped to one real channel
 
 `graph_login.py` runs Microsoft's own device-code sign-in flow -- it
 prints a short code and a URL, you sign in normally in any browser
@@ -159,18 +164,35 @@ token is short-lived (about an hour); re-run this script to refresh it.
 `graph_smoke_test.py` is deliberately the smallest possible next step:
 given `GRAPH_ACCESS_TOKEN` and `GRAPH_TEAM_ID` (the Team's M365 Group
 ID -- the `groupId` query parameter in a channel's own "Get link to
-channel" URL, no separate lookup needed) in `.env`, it lists the real
-channels Graph can see for that team, and -- only for a channel_id
-that's also in this repo's own allowlist (`config/channels/*.yaml`,
-`allowlisted: true`) -- fetches and previews one real page of messages
-(author and timestamp only, never full message text). It never touches
-ingestion, detection, digests, nudges, or anything that sends -- its
-only job is proving the live read path works in isolation before
-anything else is allowed to depend on it. Both scripts are unit-tested
-against a fake MSAL app / fake reader (`tests/unit/test_graph_login.py`,
-`tests/unit/test_graph_smoke_test.py`) -- neither has ever made a real
-network call under test, the same discipline as `GraphTeamsReader`
-itself.
+channel" URL, no separate lookup needed) in `.env`, it reads the
+allowlisted channel_ids straight from `config/channels/*.yaml` (not
+from Graph's own `list_channels()` -- that needs a second permission,
+`Channel.ReadBasic.All`, deliberately designed out; see DECISION_LOG.md's
+CHN-01 follow-ups) and, for each one, fetches and previews one real page
+of messages (author and timestamp only, never full message text) or
+reports that Graph rejected that channel_id (expected for `proj-alpha`/
+`proj-beta`, whose ids were never real). It never persists anything --
+its only job is proving the live read path works in isolation before
+anything else is allowed to depend on it.
+
+`run_live_ingest_p1_agent_test.py` is the next step up: it actually
+persists what it reads, through the real production ingestion path
+(`p1.ingestion.sync.sync_channel`, scope-gated to exactly one real,
+already-verified channel_id), into a dedicated `data/p1_live.db` --
+never the shared `data/p1.db` the mock-fixture demo/eval scripts use,
+so real message content never mixes into the store golden-case eval
+scores against. This is CHN-05's ingestion orchestrator's first genuine
+live run, proven 2026-09-19. Deliberately scoped to one channel, not
+`sync_all_allowlisted_channels()` over the full config allowlist --
+`proj-alpha`/`proj-beta` are still mock-fixture ids, and running them
+for real crashes outright (a confirmed, not guessed-at, failure mode --
+see DECISION_LOG.md).
+
+All three scripts are unit-tested against a fake MSAL app / fake reader
+(`tests/unit/test_graph_login.py`, `tests/unit/test_graph_smoke_test.py`,
+`tests/unit/test_run_live_ingest_p1_agent_test.py`) -- none has ever
+made a real network call under test, the same discipline as
+`GraphTeamsReader` itself.
 
 ## Copilot Studio custom connector API
 

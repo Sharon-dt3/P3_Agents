@@ -2965,3 +2965,126 @@ they're staying mock-only, so the tenant admin (`Alfred`, or whoever
 eventually audits this app's Graph footprint) doesn't have to wonder
 why real Graph calls are being made against ids that were never real
 in the first place. Flagged, not decided or built here.
+
+## 2026-09-19 -- CHN-05: a scoped, one-off live ingestion script -- and why the config allowlist wasn't touched
+
+**Finding.** The natural next step after CHN-01's live smoke test was
+to actually run production ingestion (`sync_all_allowlisted_channels()`)
+against the real tenant. Tried the seemingly-obvious quick fix first --
+temporarily set `allowlisted: false` on `config/channels/proj-alpha.yaml`
+and `proj-beta.yaml` so a real run wouldn't crash on their mock
+channel_ids -- and tested it directly before committing to it. It
+broke 3 real tests immediately (`test_run_daily_full_flow.py` x2,
+`test_run_walkthrough.py`): those scripts' own demo/full-flow tests
+read the exact same `config/channels/*.yaml` directory and hardcode
+`proj-alpha`/`proj-beta` as allowlisted by name. There is no separate
+"live allowlist" vs. "demo allowlist" in this codebase -- one shared
+directory serves both, so a change made for today's live run would
+have silently broken unrelated, already-passing tests. Reverted
+immediately; confirmed clean (437 passed) before doing anything else.
+
+**Build.** Added `scripts/run_live_ingest_p1_agent_test.py`: a
+deliberately narrow, one-off script that syncs exactly one real
+channel_id (`p1-agent-test`'s, already verified live via
+`graph_smoke_test.py`) through the real production path
+(`p1.ingestion.sync.sync_channel()`, wrapped in CHN-04's
+`ScopedTeamsReader` with an allowlist of just that one id -- built
+fresh in code, not read from `config/channels/*.yaml`'s shared
+allowlist at all). Writes to a dedicated `data/p1_live.db`, never the
+shared `data/p1.db` the mock-fixture demo/eval scripts read and write,
+so real Teams message content never mixes into the store golden-case
+eval scores against. Discovered along the way that
+`sync_state.channel_id` is a foreign key into a `channels` table only
+`ChannelConfigStore().sync_to_db()` populates -- added that call
+(registers every configured channel's config into the dedicated db,
+never attempts a Graph read for any but the one scoped channel_id).
+
+**Judgment calls.** (1) Did not touch `config/channels/*.yaml` at all
+for this run -- proj-alpha/proj-beta's real-vs-drop decision (raised
+last entry) stays open and fully decoupled from getting a real
+ingestion run working today. (2) New dedicated db
+(`data/p1_live.db`) rather than reusing `data/p1.db` -- a real
+person's real message content and a mock mock fixture demo/eval store
+are different enough in kind that mixing them felt like the wrong
+default, not something to do silently.
+
+**Non-vacuousness.** Real bug injection, twice. First: bypassed the
+scope gate entirely in `run_live_ingest()` (`reader = raw_reader`
+instead of wrapping it) and re-ran this script's own test file --
+both tests still passed, which is a real problem: it meant
+`test_run_live_ingest_only_ever_scopes_to_the_one_channel_id` was
+vacuous, testing a second, hand-rolled `ScopedTeamsReader` built
+inside the test itself rather than the one `run_live_ingest()` actually
+constructs. Fixed by extracting `build_scoped_reader()` -- the exact
+construction `run_live_ingest()` uses -- so the test calls that same
+function directly. Re-injected the identical bug and confirmed the
+rewritten test now genuinely fails (an `IndexError` on the fake
+reader's page list, because it never got refused, proving the
+previous version of this test would never have caught a real scope-gate
+regression here). Reverted, re-ran clean: 2 passed. Full suite: 439
+passed, 2 skipped (was 437 -- two new tests), ruff clean.
+
+**Not done, on purpose.** Deliberately stops at ingestion -- classify_and_persist,
+digests, nudges, and escalations against real data are all separate,
+larger steps not attempted here. proj-alpha/proj-beta's real-vs-drop
+decision (previous entry) is still open. `data/p1_live.db` is a new,
+uncommitted (gitignored, same as `data/p1.db`) runtime artifact --
+nothing about its schema or location is meant to be permanent
+infrastructure yet; if live ingestion becomes a regular thing rather
+than a one-off proof, this script and its db path deserve a proper
+production home, not this scaffolding.
+
+## 2026-09-19 -- CHN-01/CHN-05 confirmed live end to end; README updated to match
+
+**The confirmation.** `scripts/run_live_ingest_p1_agent_test.py` ran
+successfully against the real DigitalT3 tenant: "Ingested 1 message(s)
+from 19:ZVl0BYQCKWi4_oXsG_tuu3F4p5HsgQGobGhAMiZD_ro1@thread.tacv2" and
+persisted it into `data/p1_live.db`. This is the first time any code
+in this repo has both read a real message from a real Microsoft Teams
+channel and stored it through the real production ingestion path
+(`sync_channel`, scope-gated). Everything upstream of this point this
+session -- the scope investigation, the two `Channel.ReadBasic.All`
+round-trips, the ingestion refactor, the smoke-test crash fix -- was in
+service of getting to this one line of real output.
+
+**Build.** Updated `README.md` to stop describing this as pending:
+- C2's Status row: `**Partial** -- code done, live credential pending`
+  -> `**Done** -- live-verified 2026-09-19`, `Verify` column now
+  includes `scripts/run_live_ingest_p1_agent_test.py`.
+- The Architecture section's `TeamsReader` description now says
+  `GraphTeamsReader` is live-verified rather than "once CHN-01's
+  credential lands".
+- CHN-01's Key decisions paragraph rewritten from "admin consent is
+  still pending... has never read a real message" to what actually
+  happened, including the `Channel.ReadBasic.All` request-then-remove
+  round trip and a pointer to today's DECISION_LOG entries, plus an
+  explicit note that `proj-alpha`/`proj-beta` are still mock-fixture
+  ids (that decision stays open, undecided, tracked separately).
+- "Connecting to a real Microsoft Team" section: added
+  `run_live_ingest_p1_agent_test.py` as a third script, corrected
+  `graph_smoke_test.py`'s own description (it no longer enumerates
+  channels via Graph's `list_channels()` -- it reads the allowlist
+  from config, per the earlier refactor).
+- The walkthrough's live-permalink caveat corrected: permalinks in
+  that script don't resolve because `proj-alpha`/`proj-beta` are mock
+  ids, not because Graph consent is pending (consent landed; a
+  walkthrough-style run against `p1-agent-test` would resolve).
+
+**Judgment calls.** None beyond accurately describing what already
+happened -- this entry is documentation catching up to reality, not a
+new decision.
+
+**Non-vacuousness.** N/A -- documentation update, no application code
+changed.
+
+**Verified.** Full suite re-run after the README edit (docs-only, but
+confirmed nothing else drifted): 439 passed, 2 skipped, ruff clean.
+
+**Not done, on purpose.** Still open, unchanged by this entry:
+proj-alpha/proj-beta's real-vs-drop decision; the Copilot Studio
+Dataverse config table and agent instructions; a real Power Automate
+flow for the write side; a standalone always-on scheduler process;
+CHN-33 (spine extraction for P2/P3). The live ingestion proven today
+covers CHN-01/CHN-05 specifically -- classification, digests, nudges
+and escalations against this real data are separate, larger,
+not-yet-attempted steps.
