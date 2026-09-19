@@ -110,7 +110,7 @@ def test_temperature_is_never_forwarded_to_the_bedrock_client(tmp_path):
     assert "temperature" not in fake_client.messages.captured_kwargs
 
 
-def test_missing_aws_config_raises_before_touching_the_network(tmp_path):
+def test_missing_aws_config_raises_before_touching_the_network(tmp_path, monkeypatch):
     """No AnthropicBedrock() client should ever be constructed -- let
     alone called -- when the required AWS config is incomplete.
 
@@ -121,7 +121,22 @@ def test_missing_aws_config_raises_before_touching_the_network(tmp_path):
     exactly the error this test exists to check -- that's a real
     behavior worth knowing about production-side too (a misconfigured
     Bedrock provider degrades rather than failing loudly), but it's not
-    what this test is for."""
+    what this test is for.
+
+    Also strips AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY from the real
+    environment for the duration of this test: LLMGateway.__init__
+    falls back to os.environ.get(...) whenever a constructor arg is
+    None, and gateway.py's own module-level load_dotenv() means a real
+    .env with real AWS credentials (as this repo's now has, for the
+    live Bedrock path) would otherwise silently defeat this test's
+    bedrock_aws_access_key=None/bedrock_aws_secret_key=None -- passing
+    None would stop meaning "missing" and this test would exercise a
+    real AnthropicBedrock() call instead of the config-validation path
+    it exists to check. Confirmed this was a real, live failure mode
+    (not a hypothetical): it broke exactly this way the moment this
+    session's real AWS credentials landed in .env."""
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
     gateway = _make_gateway(
         tmp_path, bedrock_aws_access_key=None, bedrock_aws_secret_key=None
     )

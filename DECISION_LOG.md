@@ -3088,3 +3088,268 @@ CHN-33 (spine extraction for P2/P3). The live ingestion proven today
 covers CHN-01/CHN-05 specifically -- classification, digests, nudges
 and escalations against this real data are separate, larger,
 not-yet-attempted steps.
+
+## 2026-09-19 -- CHN-22: the real Power Automate flow provisioned; write side wired, not yet proven live
+
+**What was built.** A real, saved Power Automate flow ("P1 Teams
+Publisher") in the DigitalT3 Software Services Pvt Ltd environment,
+built by driving `make.powerautomate.com` directly in the browser (the
+user's explicit choice, same pattern as the earlier Copilot Studio
+agent setup): an HTTP trigger with the exact JSON schema
+`PowerAutomateTeamsPublisher._post()` already sends
+(`action_type`/`target`/`content`, all required), a `Condition` on
+`action_type == "channel_post"`, and one Teams "Post message in a chat
+or channel" action per branch -- `Post in: Channel` (Team hardcoded to
+the real DigitalT3 team id from `.env`'s `GRAPH_TEAM_ID`, Channel bound
+to the trigger's `target`) on the true branch, `Post in: Chat with Flow
+bot` (Recipient bound to `target`) on the false branch -- both with
+Message bound to the trigger's `content`. `.env` now has
+`TEAMS_PUBLISHER_MODE=power_automate` and the flow's real
+`POWER_AUTOMATE_FLOW_URL` (the anonymous, SAS-signed trigger URL),
+matching `.env.example`'s documented shape.
+
+**Judgment calls.**
+- **"Who can trigger the flow?" switched from the default "Any user in
+  my tenant" to "Anyone."** The tenant-restricted default requires an
+  Azure AD bearer token on every call; `PowerAutomateTeamsPublisher`
+  does a plain, unauthenticated JSON POST (by design -- see that
+  file's own docstring: it never holds a Graph token, only the flow's
+  URL). "Anyone" produces the classic SAS-signed URL
+  (`?...&sp=...&sv=...&sig=...`) that a bare POST can call, which is
+  what the existing, already-written publisher code requires. This
+  makes the flow's URL itself the credential -- consistent with how
+  `.env.example` already documented `POWER_AUTOMATE_FLOW_URL` as a
+  secret-shaped value, not a new posture. No alternative was viable
+  without rewriting `PowerAutomateTeamsPublisher` to acquire and
+  attach an AAD token, which is a materially different design than
+  what CHN-22 already committed to.
+- **Team id hardcoded, Channel id left dynamic.** The publisher's
+  contract only ever sends one identifier (`target`) per call --
+  channel_id for a channel post, member_id for a direct message --
+  never a team_id. Since Power Automate's Teams connector needs both a
+  Team and a Channel to resolve a channel post, the flow hardcodes the
+  one Team this pilot lives in (`GRAPH_TEAM_ID`'s value, confirmed
+  correct by cross-checking that `p1-agent-test` appears in that
+  Team's channel list once entered) and leaves Channel bound to
+  `target`, so the flow works for any channel in that Team, not only
+  `p1-agent-test`, matching the reader side's existing single-tenant
+  assumption.
+
+**Build.** `scripts/power_automate_smoke_test.py` (new): posts one
+obvious, timestamped, clearly-labelled test message to the real
+`p1-agent-test` channel_id through the real
+`PowerAutomateTeamsPublisher`, calling it directly rather than through
+`SPN-09`'s `guarded_send()` -- this script is the guard here, the same
+role `graph_smoke_test.py` plays on the read side. Not yet run for
+real: that is the next step, deliberately left for the user to trigger
+and confirm against the actual Teams channel, consistent with never
+having this session assert a live result it did not itself observe
+being pasted back.
+
+**Non-vacuousness.** `tests/unit/test_power_automate_smoke_test.py`'s
+channel-id assertion was proven to actually exercise the real
+`CHANNEL_ID` constant, not just echo back whatever a fake happened to
+receive: temporarily changed the script's `post_channel_message` call
+to a wrong, hardcoded channel id, re-ran the test, confirmed it failed
+with the expected diff, then reverted and re-confirmed green.
+
+**Verified.** `uv run pytest tests/unit/test_power_automate_smoke_test.py`:
+4 passed. Full suite: 442 passed, 2 skipped, 1 pre-existing failure
+(`test_approval_dashboard_app.py::test_dashboard_lists_and_approves_a_pending_nudge`,
+confirmed unrelated -- it fails identically with these two new files
+removed entirely, and passes in isolation; a pre-existing test-order
+dependency, not something this entry introduced or attempts to fix).
+`ruff check` clean on both new files (one auto-fixed unused-import and
+import-order issue).
+
+**Not done, on purpose.** The flow has never actually been triggered --
+no real message has landed in the real `p1-agent-test` channel yet.
+That requires running `scripts/power_automate_smoke_test.py` for real
+and checking Teams, which is next. Beyond that: the full "ingest ->
+classify -> summarize -> post" pipeline against real `p1-agent-test`
+data has not been attempted (classification and summary generation
+both need a real LLM call that hasn't been exercised against this
+channel's real content yet); `proj-alpha`/`proj-beta`'s real-vs-drop
+decision remains open; the standalone always-on scheduler, the
+Copilot Studio Dataverse config table, and CHN-33 (spine extraction
+for P2/P3) are all still outstanding, unchanged by this entry.
+
+## 2026-09-19 -- SPN-02: real AWS Bedrock credentials wired in; a real, previously-latent test bug found and fixed as a direct consequence
+
+**What was added.** `.env` now has `LLM_PROVIDER=bedrock`,
+`AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` (the user's own IAM
+credentials, provided directly, not fabricated or derived from any
+sign-in flow -- an API key pair is a static credential the user
+generates herself, unlike the Graph device-code token, so there was no
+interactive-login step to gate this on). `AWS_REGION` and
+`BEDROCK_MODEL_ID` were already present from an earlier session.
+`LLM_PROVIDER` was previously unset (defaulting to `anthropic`, which
+would have failed anyway with no `ANTHROPIC_API_KEY` present); the
+user chose Bedrock explicitly when asked, matching the AWS values
+already sitting unused in `.env`.
+
+**A real bug this surfaced, immediately, not hunted for.** The very
+next full-suite run failed:
+`test_llm_gateway_bedrock_call_shape.py::test_missing_aws_config_raises_before_touching_the_network`
+went from passing to raising a genuine `anthropic.APIConnectionError`
+instead of the `LLMGatewayError` it asserts on. Root cause: `gateway.py`
+calls `load_dotenv()` at module import time, and `LLMGateway.__init__`
+resolves every Bedrock config field as `constructor_arg or
+os.environ.get(...)`. The test simulated "AWS config missing" by
+passing `bedrock_aws_access_key=None, bedrock_aws_secret_key=None` to
+the constructor -- which worked only because `.env` had never had real
+values for those two names. The moment real values landed in `.env`,
+`None or os.environ.get("AWS_ACCESS_KEY_ID")` silently resolved to the
+real key, the test's "missing config" scenario stopped being missing,
+and `_call_bedrock` sailed past its own validation check into a real
+`AnthropicBedrock()` client construction and a real (failing, but
+real) network call -- from inside a unit test, which is exactly the
+class of thing SPN-02's other Bedrock tests go out of their way to
+prevent (see this file's own module docstring: "no AWS credentials,
+network access, or real Bedrock account are ever touched under
+pytest"). This test alone hadn't been living up to that.
+
+**Fix.** Added `monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)`
+and the same for `AWS_SECRET_ACCESS_KEY` at the top of that one test,
+so it no longer depends on the ambient environment (real or `.env`-
+sourced) lacking these two names -- it now actively removes them for
+its own duration, regardless of what `.env` holds. No other test in
+this file makes the same assumption (the other three all supply a
+fake `_bedrock_client` directly and never reach the config-validation
+branch at all).
+
+**Judgment calls.** Fixed this in place rather than only disclosing it:
+it's a one-line, clearly-scoped isolation fix to a test whose entire
+purpose is guarding against exactly this kind of accidental live call,
+not a design question needing a decision.
+
+**Non-vacuousness.** Directly observed, not injected: this was a real
+failure from a real change (adding real credentials to `.env`), caught
+by running the full suite immediately afterward rather than assuming
+the credential addition was inert. Re-ran the fixed test alone (4
+passed) and the full suite again to confirm the fix holds.
+
+**Verified.** `uv run pytest tests/unit/test_llm_gateway_bedrock_call_shape.py`:
+4 passed. Full suite: 442 passed, 2 skipped, ruff clean, plus the one
+pre-existing, already-documented, unrelated
+`test_approval_dashboard_app.py` order-dependent flake (unchanged by
+this entry).
+
+**Not done, on purpose.** No real Bedrock call has been made yet --
+these credentials are wired and config-validated, not yet exercised
+against a real classification or summary prompt. That is the next
+step, building the real "ingest -> classify -> summarize -> post"
+pipeline script against `p1-agent-test`.
+
+## 2026-09-19 -- CHN-23: the real ingest -> classify -> digest -> publish pipeline, wired for `p1-agent-test` and proven against a fake reader/scripted model
+
+**What was built.** `scripts/run_live_pipeline_p1_agent_test.py`: the
+first script this session to exercise CHN-08/09 classification, the
+CHN-10 participation ledger, and CHN-13 digest generation against real
+`p1-agent-test` data, by calling the exact same production functions
+every mock-fixture test and `scripts/run_daily.py` already use
+(`sync_channel`, `classify_and_persist`, `run_daily_digest_job`) --
+pointed at the real `channel_id`, a real `LLMGateway` (Bedrock, per
+SPN-02), and whatever `get_teams_publisher()` resolves to from
+`TEAMS_PUBLISHER_MODE` (Power Automate, per CHN-22) -- instead of
+fixtures and a mock. It builds on the read side
+(`scripts/run_live_ingest_p1_agent_test.py`) and write side
+(`scripts/power_automate_smoke_test.py`) this session already proved
+live on their own; this script is the first thing to connect ingest,
+classification, and publish into one real run. It never pre-seeds a
+`members` row from fixture data the way `scripts/run_daily.py` does --
+`MessageStore._ensure_member_exists` already covers that for any real
+`author_id` ingestion encounters (see CHN-31), so nothing here needs to
+duplicate it.
+
+**Three real findings, disclosed in the script's own docstring before
+being asked, not assumed away:**
+
+1. `config/channels/p1-agent-test.yaml` sets `ignore_bots: true`, and
+   the one real message in this channel as of this writing (the Power
+   Automate smoke test's own post) is bot-authored -- it will be
+   classified as noise and contribute nothing to a digest. This script
+   will not look "useful" on a real run until a real, human-authored
+   message exists in the actual Teams channel.
+2. The channel's `working_days` is Mon-Fri in `Asia/Colombo`;
+   `run_daily_digest_job` returns `SKIPPED_NON_WORKING_DAY` outright
+   for any other day. A `--day YYYY-MM-DD` flag lets a specific past
+   working day be targeted instead of only ever trying "today."
+3. `run_daily_digest_job` requires human approval before its very
+   first publish for any channel ever
+   (`DigestStore.has_ever_published()` is `False` for
+   `p1-agent-test`) -- so the very first real run of this script is
+   expected to end `status="awaiting_approval"`, not an actual Teams
+   post. That is designed behaviour ("no channel ever receives an
+   unexpected bot post"), not a failure; approving it is a separate,
+   deliberate step.
+
+**A real bug this surfaced while writing the test, caught before it
+ever ran for real, not hunted for.** The first draft of
+`tests/unit/test_run_live_pipeline_p1_agent_test.py` used
+`author_id="sharons@digitalt3.com"` (lowercase) for its synthetic
+human-authored fixture message. The very first run classified it as
+noise, not signal:
+`detection.rules._rule_not_on_roster` does an exact, case-sensitive
+string match against `config/channels/p1-agent-test.yaml`'s real
+roster entry, which is `"SharonS@digitalt3.com"` (capital S). The
+fixture's casing didn't match, so the message fell through to that
+rule and was excluded before ever reaching the model -- exactly the
+kind of silent misclassification this pipeline's own docstring warns
+about for bot-authored content, just triggered by a test-fixture typo
+instead. Fixed by changing the fixture's `author_id` to match the real
+roster's exact casing, with a comment on `_human_message()` explaining
+why the casing matters (rules.py's roster check is not
+case-insensitive, and there is no plan to make it one -- Teams/Graph
+author identifiers are case-sensitive strings, and normalizing them
+implicitly here would risk silently admitting a genuinely different
+account).
+
+**A second, unrelated test bug found and fixed in the same file.**
+`test_run_live_pipeline_only_ever_scopes_to_the_one_channel_id` called
+`build_scoped_reader()` directly without first calling
+`run_live_pipeline()` (which calls `init_db()`), so `sync_state` didn't
+exist yet and the test failed with
+`sqlite3.OperationalError: no such table: sync_state`. Fixed by adding
+an initial `run_live_pipeline()` call (fake reader, empty page) before
+the direct `build_scoped_reader()`/`sync_channel()` scope-violation
+check -- mirroring the exact pattern already established in
+`tests/unit/test_run_live_ingest_p1_agent_test.py`'s own
+`test_run_live_ingest_only_ever_scopes_to_the_one_channel_id`.
+
+**Judgment calls.** Both test fixes were applied in place rather than
+only disclosed: the roster-casing fix corrects a wrong test fixture
+against a real, unambiguous config value (not a design question), and
+the missing-`init_db()` fix reproduces an already-established,
+already-reviewed pattern from a sibling test file rather than
+introducing a new one.
+
+**Non-vacuousness.** Directly injected and confirmed, not assumed: with
+the fix reverted (`author_id="sharons@digitalt3.com"` restored),
+`test_first_run_ingests_classifies_and_awaits_approval` failed with the
+exact original symptom (`Classified 1 message(s): 0 signal, 1 noise.`,
+expected `"1 signal, 0 noise"`); reverted back and re-confirmed all 4
+tests green. The scope-gate test's non-vacuousness is inherited from
+the identical, already-proven pattern in
+`test_run_live_ingest_p1_agent_test.py` (that file's own comment
+documents its own bug-injection proof for the same
+`build_scoped_reader()` construction path this script reuses).
+
+**Verified.** `uv run pytest tests/unit/test_run_live_pipeline_p1_agent_test.py`:
+4 passed. Full suite: 446 passed, 2 skipped, ruff clean, plus the same
+one pre-existing, already-documented, unrelated
+`test_approval_dashboard_app.py::test_dashboard_lists_and_approves_a_pending_nudge`
+order-dependent flake (unchanged by this entry; still fails identically
+in isolation from these changes).
+
+**Not done, on purpose.** This script has not yet been run for real
+against the actual Teams channel, real Bedrock, or the real Power
+Automate flow -- only against a fake Graph reader and a scripted
+gateway. The real first run is expected to report `awaiting_approval`
+and, per finding (1) above, will not surface a useful digest until a
+real, human-authored message exists in `p1-agent-test` -- that requires
+a person (Sharon) actually posting there. `proj-alpha`/`proj-beta`'s
+real-vs-drop decision remains open; the standalone always-on scheduler,
+the Copilot Studio Dataverse config table, a real public host for
+`copilot_studio_api.py`, and CHN-33 (spine extraction for P2/P3) are
+all still outstanding, unchanged by this entry.
