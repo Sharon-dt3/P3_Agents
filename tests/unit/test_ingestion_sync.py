@@ -1,6 +1,7 @@
 import pytest
 
 from p1.adapters.teams_reader import (
+    DeltaLinkRejectedError,
     DeltaTokenExpiredError,
     MessagePage,
     TeamsChannel,
@@ -147,3 +148,41 @@ def test_expired_delta_token_triggers_a_clean_resync(db_path):
     assert result.resynced is True
     assert result.messages_ingested == 1
     assert sync_state.get_delta_token("c1") == "fresh-token"
+
+
+def test_delta_link_rejected_stops_paging_without_persisting_the_broken_link(db_path):
+    # Reproduces 2026-09-20's real Teams-agent-test failure: page 1
+    # succeeds with zero messages and a nextLink (a known Graph bug on
+    # an empty/newly-created channel -- see DeltaLinkRejectedError's own
+    # docstring), and following that nextLink for page 2 is rejected.
+    # The sync must not blow up, must not loop forever retrying the same
+    # rejected link, and must leave sync_state exactly where it was
+    # before this attempt (None here) so the next sync starts clean from
+    # the plain relative URL instead of the dead link.
+    sync_state = SyncStateStore(db_path)
+    message_store = MessageStore(db_path)
+
+    class EmptyChannelWithBrokenNextLinkReader:
+        def list_channels(self):
+            return [TeamsChannel(id="c1", display_name="Channel One")]
+
+        def list_channel_members(self, channel_id):
+            return []
+
+        def list_messages(self, channel_id, since=None, delta_token=None):
+            if delta_token is None:
+                return MessagePage(messages=[], delta_token="https://x/delta?$skiptoken=abc", has_more=True)
+            raise DeltaLinkRejectedError("Graph rejected its own nextLink")
+
+        def list_replies(self, message_id):
+            return []
+
+        def get_permalink(self, message_id):
+            return ""
+
+    result = sync_channel(EmptyChannelWithBrokenNextLinkReader(), "c1", sync_state, message_store)
+
+    assert result.messages_ingested == 0
+    assert result.resynced is False
+    # Nothing was ever known-good, so nothing (not the rejected link) is persisted.
+    assert sync_state.get_delta_token("c1") is None

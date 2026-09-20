@@ -2,10 +2,14 @@
 GraphTeamsReader (CHN-03/CHN-05): the real implementation behind the
 identical TeamsReader interface, calling Microsoft Graph.
 
-NOT YET EXERCISED AGAINST A LIVE TENANT -- CHN-01's admin consent is
-still outstanding (see DECISION_LOG.md). Written against the documented
-Graph API shape so it's ready to wire in; the scored path (harness, CI,
-demo) never depends on this class.
+LIVE-VERIFIED as of 2026-09-19 -- CHN-01's tenant admin consent landed,
+and this class has read and persisted a real message from a real Teams
+channel (`p1-agent-test`) against the real DigitalT3 tenant (see
+scripts/run_live_ingest_p1_agent_test.py and DECISION_LOG.md's
+2026-09-19 entries). The scored path (harness, CI, demo) still never
+depends on this class -- every golden case and unit test runs against
+MockTeamsReader on purpose (Gate G0b's own rule), so this file being
+live doesn't change what CI needs.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ import time
 import httpx
 
 from p1.adapters.teams_reader import (
+    DeltaLinkRejectedError,
     DeltaTokenExpiredError,
     MessagePage,
     TeamsChannel,
@@ -78,6 +83,20 @@ class GraphTeamsReader(TeamsReader):
             raise DeltaTokenExpiredError(
                 f"Delta token expired for channel_id={channel_id!r}; caller must resync from scratch."
             )
+        if resp.status_code == 400 and delta_token:
+            # Known Graph-side bug (see DeltaLinkRejectedError's own
+            # docstring): a nextLink Graph just handed back can come
+            # back rejected the moment it's followed, with this exact
+            # error text -- reproducible on an empty/newly created
+            # channel. Narrowly matched on the actual error text so an
+            # unrelated 400 (a real client-side mistake) still surfaces
+            # normally via raise_for_status() below.
+            body_text = resp.text
+            if "DeltaToken" in body_text and "not supported" in body_text:
+                raise DeltaLinkRejectedError(
+                    f"Graph rejected its own continuation link for channel_id={channel_id!r}: "
+                    f"{body_text[:300]!r}"
+                )
         resp.raise_for_status()
         data = resp.json()
 

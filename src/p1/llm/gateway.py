@@ -22,6 +22,8 @@ from typing import Any
 import httpx
 from anthropic import Anthropic, AnthropicBedrock, APIStatusError, RateLimitError
 from dotenv import load_dotenv
+
+from p1.prompts import PromptRegistry
 from tenacity import (
     Retrying,
     retry_if_exception_type,
@@ -55,6 +57,67 @@ class LLMResponse:
     latency_ms: float
     cache_hit: bool
     degraded: bool = False
+
+
+def _strip_markdown_json_fence(text: str) -> str:
+    """Strip a ```json ... ``` (or bare ``` ... ```) wrapper if the
+    model added one despite being told not to. Local/open models do
+    this often enough that it is worth handling for free rather than
+    spending one of generate_structured()'s limited retry attempts on
+    a purely cosmetic wrapper."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    return stripped
+
+
+def _example_instance(schema: dict, defs: dict | None = None):
+    """Build a placeholder EXAMPLE INSTANCE (not the schema itself) from a
+    JSON Schema dict -- e.g. {"narrative": "<value>"} for a one-field
+    schema, {"label": "update", "confidence": 0.0} for an enum+float one.
+
+    Ollama's /api/generate has no native tool-calling API (see
+    _call_ollama's own docstring), so the raw JSON Schema dict is the
+    only shape hint a local model gets. Observed live tonight: given
+    just the schema (which itself has top-level "properties"/"type"/
+    "title" keys), a small local model can echo that wrapper back
+    verbatim with real values spliced into the leaves -- e.g.
+    returning {"properties": {"narrative": "..."}} for a schema whose
+    only real field is "narrative" -- instead of producing a flat
+    instance of it. Showing a concrete example instance alongside the
+    schema, with an explicit "don't nest under properties" instruction,
+    gives a weak model something to pattern-match against that a raw
+    meta-schema does not."""
+    defs = defs if defs is not None else schema.get("$defs", {})
+    if "$ref" in schema:
+        ref_name = schema["$ref"].rsplit("/", 1)[-1]
+        return _example_instance(defs.get(ref_name, {}), defs)
+    if "enum" in schema:
+        return schema["enum"][0]
+    for key in ("anyOf", "oneOf"):
+        if key in schema:
+            non_null = [opt for opt in schema[key] if opt.get("type") != "null"]
+            return _example_instance(non_null[0], defs) if non_null else None
+    schema_type = schema.get("type")
+    if schema_type == "object" or "properties" in schema:
+        return {
+            name: _example_instance(prop, defs)
+            for name, prop in schema.get("properties", {}).items()
+        }
+    if schema_type == "array":
+        return [_example_instance(schema.get("items", {}), defs)]
+    if schema_type == "integer":
+        return 0
+    if schema_type == "number":
+        return 0.0
+    if schema_type == "boolean":
+        return True
+    return "<value>"
 
 
 class LLMGateway:
@@ -129,7 +192,7 @@ class LLMGateway:
                 self.provider, prompt, system, max_tokens, temperature, tools, tool_choice
             )
             provider_used = self.provider
-        except LLMGatewayError:
+        except LLMGatewayError as exc:
             # Both cloud providers (direct Anthropic API, or the same
             # models via AWS Bedrock) degrade to the local Ollama
             # fallback on exhaustion; a request already targeting Ollama,
@@ -137,7 +200,14 @@ class LLMGateway:
             # back to and simply re-raises.
             if self.provider not in ("anthropic", "bedrock"):
                 raise
-            logger.warning("Primary provider exhausted; degrading to local Ollama fallback")
+            # The original exception (exc) must be logged here, not just
+            # swallowed -- CHN-26 found that a bare `except
+            # LLMGatewayError:` discarded the actual reason the primary
+            # provider failed (e.g. a real Bedrock auth/permission
+            # rejection), so a real failure showed only Ollama's own,
+            # unrelated "connection refused" -- with no way to tell why
+            # Bedrock itself had failed at all.
+            logger.warning("Primary provider (%s) exhausted: %s; degrading to local Ollama fallback", self.provider, exc)
             degraded = True
             text, model, in_tok, out_tok = self._call_provider(
                 "ollama", prompt, system, max_tokens, temperature, tools, tool_choice
@@ -169,7 +239,7 @@ class LLMGateway:
         if provider == "bedrock":
             return self._call_bedrock(prompt, system, max_tokens, temperature, tools, tool_choice)
         if provider == "ollama":
-            return self._call_ollama(prompt, system, max_tokens, temperature)
+            return self._call_ollama(prompt, system, max_tokens, temperature, tools, tool_choice)
         raise LLMGatewayError(f"Unknown LLM provider: {provider}")
 
     def _call_anthropic(self, prompt, system, max_tokens, temperature, tools, tool_choice):
@@ -293,22 +363,66 @@ class LLMGateway:
             text = "".join(block.text for block in resp.content if getattr(block, "type", None) == "text")
         return text, resp.model, resp.usage.input_tokens, resp.usage.output_tokens
 
-    def _call_ollama(self, prompt, system, max_tokens, temperature):
+    def _make_ollama_client(self, *, base_url: str, timeout: float) -> httpx.Client:
+        """Seam for tests: production builds a real httpx.Client against
+        the configured Ollama server; tests substitute one wired to an
+        httpx.MockTransport and never touch a real network or server."""
+        return httpx.Client(base_url=base_url, timeout=timeout)
+
+    def _call_ollama(self, prompt, system, max_tokens, temperature, tools=None, tool_choice=None):
+        """Ollama's /api/generate has no native tool-calling API the way
+        the Anthropic Messages API (shared by both other providers) does
+        -- CHN-27 found that this previously dropped `tools`/`tool_choice`
+        entirely (they weren't even accepted as parameters), meaning a
+        real Ollama call for ANY structured-output request (every real
+        capability in this codebase goes through generate_structured())
+        was never actually told what schema to produce. The model would
+        just free-associate, generate_structured()'s json.loads() would
+        fail on every attempt, and the whole call would end in
+        StructuredOutputError -- discovered before ever being exercised
+        against a live Ollama server, while preparing to rely on Ollama
+        as this session's unblock for a real, external Bedrock
+        permissions gap (see DECISION_LOG.md).
+
+        When a tool schema is requested, its JSON schema is now appended
+        to the prompt as an explicit instruction instead -- the closest
+        equivalent Ollama's plain-completion API supports. Markdown code
+        fences (```json ... ```) are stripped from the response before
+        it's handed back, since local models often wrap JSON in one
+        despite being told not to -- avoiding a guaranteed
+        first-attempt parse failure for a purely cosmetic reason.
+        """
+        full_prompt = prompt
+        if tools and tool_choice:
+            tool_name = tool_choice.get("name")
+            tool = next((t for t in tools if t.get("name") == tool_name), tools[0])
+            input_schema = tool["input_schema"]
+            example = _example_instance(input_schema)
+            # Wrapper instruction text lives in prompts/ (SPN-05's own
+            # rule: no hand-written prompt as a Python literal) even
+            # though it isn't tied to one capability -- see
+            # prompts/README.md's entry for why.
+            schema_instructions = PromptRegistry().get("ollama_schema_instructions").render(
+                example=json.dumps(example),
+                schema=json.dumps(input_schema),
+            )
+            full_prompt = f"{prompt}\n\n{schema_instructions}"
+
         payload = {
             "model": self.ollama_model,
-            "prompt": f"{system}\n\n{prompt}" if system else prompt,
+            "prompt": f"{system}\n\n{full_prompt}" if system else full_prompt,
             "stream": False,
             "options": {"temperature": temperature, "num_predict": max_tokens},
         }
         try:
-            with httpx.Client(base_url=self.ollama_base_url, timeout=60.0) as client:
+            with self._make_ollama_client(base_url=self.ollama_base_url, timeout=60.0) as client:
                 resp = client.post("/api/generate", json=payload)
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.HTTPError as exc:
             raise LLMGatewayError(f"Ollama request failed: {exc}") from exc
 
-        text = data.get("response", "")
+        text = _strip_markdown_json_fence(data.get("response", ""))
         in_tok = data.get("prompt_eval_count", 0)
         out_tok = data.get("eval_count", 0)
         return text, self.ollama_model, in_tok, out_tok

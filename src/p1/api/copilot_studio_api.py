@@ -66,9 +66,39 @@ from p1.adapters.copilot_studio_connector import (
     handle_update_channel_config,
 )
 from p1.approval.proposals import ProposalNotFoundError
-from p1.storage.db import init_db
+from p1.storage.db import DEFAULT_DB_PATH, init_db
 
 API_KEY_ENV_VAR = "COPILOT_STUDIO_API_KEY"
+DB_PATH_ENV_VAR = "P1_DB_PATH"
+
+
+def _db_path() -> Path:
+    """2026-09-20: every handle_* call below used to run with NO db_path
+    at all, which silently fell back to each handler's own default
+    parameter (DEFAULT_DB_PATH = "data/p1.db") -- a fresh,
+    essentially-empty test database, completely separate from
+    data/p1_live.db, the one scripts/live_runner_p1_agent_test.py
+    actually ingests into and publishes from. Confirmed live:
+    list_pending_approvals returned {"approvals":[]} and
+    update_channel_config 404'd on a channel_id that genuinely has a
+    synced config -- both because this API was reading the wrong file,
+    not because either was actually empty/missing. This module's own
+    docstring already anticipated "any DB_PATH a real deployer points
+    this at)" -- that env var just never existed until now.
+
+    2026-09-20, same day: this used to be a module-level constant
+    computed once at import time, which is exactly the mistake
+    DECISION_LOG.md's frozen-config entry for the live runner already
+    named elsewhere -- tests/unit/test_copilot_studio_api.py's own
+    _seed() seeds an isolated per-test database assuming DEFAULT_DB_PATH,
+    and a frozen DB_PATH read once at import time can never be
+    overridden per test via monkeypatch, so every action endpoint
+    silently read a different file than the one the test just seeded.
+    Reading the env var fresh here, at request/startup time, is what
+    lets tests (and a real deployer changing .env and restarting) get
+    the value they actually asked for. See DECISION_LOG.md.
+    """
+    return Path(os.environ.get(DB_PATH_ENV_VAR, str(DEFAULT_DB_PATH)))
 
 
 @asynccontextmanager
@@ -88,7 +118,7 @@ async def _lifespan(app: FastAPI):
     _client() below) -- a bare TestClient(app) silently skips the
     whole ASGI lifespan, startup included.
     """
-    init_db()
+    init_db(_db_path())
     yield
 
 
@@ -150,18 +180,22 @@ def health() -> dict:
     capability endpoint. Returns whether an API key is even configured
     (not its value), so a deployer can tell "not reachable" apart from
     "reachable but not configured" without guessing."""
-    return {"status": "ok", "api_key_configured": bool(os.environ.get(API_KEY_ENV_VAR))}
+    return {
+        "status": "ok",
+        "api_key_configured": bool(os.environ.get(API_KEY_ENV_VAR)),
+        "db_path": str(_db_path()),
+    }
 
 
 @app.post("/list_pending_approvals")
 def list_pending_approvals(_: None = Depends(require_api_key)) -> dict:
-    return handle_list_pending_approvals({})
+    return handle_list_pending_approvals({}, db_path=_db_path())
 
 
 @app.post("/approve")
 def approve(body: ApproveRequest, _: None = Depends(require_api_key)) -> dict:
     try:
-        return handle_approve(body.model_dump())
+        return handle_approve(body.model_dump(), db_path=_db_path())
     except ProposalNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -169,7 +203,7 @@ def approve(body: ApproveRequest, _: None = Depends(require_api_key)) -> dict:
 @app.post("/reject")
 def reject(body: RejectRequest, _: None = Depends(require_api_key)) -> dict:
     try:
-        return handle_reject(body.model_dump())
+        return handle_reject(body.model_dump(), db_path=_db_path())
     except ProposalNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -177,7 +211,7 @@ def reject(body: RejectRequest, _: None = Depends(require_api_key)) -> dict:
 @app.post("/update_channel_config")
 def update_channel_config(body: UpdateChannelConfigRequest, _: None = Depends(require_api_key)) -> dict:
     try:
-        return handle_update_channel_config(body.model_dump(exclude_none=True))
+        return handle_update_channel_config(body.model_dump(exclude_none=True), db_path=_db_path())
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

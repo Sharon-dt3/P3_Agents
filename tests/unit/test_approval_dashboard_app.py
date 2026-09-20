@@ -110,6 +110,16 @@ def test_dashboard_lists_and_approves_a_pending_nudge(tmp_path, monkeypatch):
 
     monkeypatch.setenv("P1_DB_PATH", str(db_path))
     monkeypatch.setenv("P1_APPROVER_ID", "priya")
+    # 2026-09-19: app/approval_dashboard.py now calls load_dotenv() (see
+    # DECISION_LOG.md), and load_dotenv() does not override a variable that
+    # is already set in the environment. Pinning TEAMS_PUBLISHER_MODE to
+    # "mock" here -- before AppTest.from_file(...).run() ever executes the
+    # app script -- guarantees this test's real click on the Approve
+    # button (below) resolves to the local LogPublisher, never the real
+    # Power Automate flow in the developer's own .env, regardless of
+    # whatever TEAMS_PUBLISHER_MODE happens to be set to on the machine
+    # running this suite.
+    monkeypatch.setenv("TEAMS_PUBLISHER_MODE", "mock")
 
     at = AppTest.from_file(APP_PATH, default_timeout=30)
     at.run()
@@ -140,6 +150,16 @@ def test_dashboard_saves_a_config_change(tmp_path, monkeypatch):
 
     monkeypatch.setenv("P1_DB_PATH", str(db_path))
     monkeypatch.setenv("P1_APPROVER_ID", "priya")
+    # 2026-09-19: app/approval_dashboard.py now calls load_dotenv() (see
+    # DECISION_LOG.md), and load_dotenv() does not override a variable that
+    # is already set in the environment. Pinning TEAMS_PUBLISHER_MODE to
+    # "mock" here -- before AppTest.from_file(...).run() ever executes the
+    # app script -- guarantees this test's real click on the Approve
+    # button (below) resolves to the local LogPublisher, never the real
+    # Power Automate flow in the developer's own .env, regardless of
+    # whatever TEAMS_PUBLISHER_MODE happens to be set to on the machine
+    # running this suite.
+    monkeypatch.setenv("TEAMS_PUBLISHER_MODE", "mock")
 
     at = AppTest.from_file(APP_PATH, default_timeout=30)
     at.run()

@@ -163,6 +163,49 @@ class ProposalStore:
         # key returns whichever row actually exists now.
         return self.get_by_idempotency_key(idempotency_key)
 
+    def refresh_payload(
+        self, proposal_id: str, *, payload: dict, source_refs: list[str] | None = None,
+    ) -> Proposal:
+        """Replaces a still-pending proposal's payload (and, when given,
+        its source_refs) with freshly regenerated content -- used by
+        daily_job.py so that a digest regenerated after this proposal
+        was first created (new messages arriving during the day, before
+        a human gets to it) is what actually gets approved and sent,
+        never a stale snapshot frozen at creation time.
+        original_model_output is never touched here, so "what the model
+        originally said" stays readable no matter how many times
+        payload is refreshed before a decision is made -- same
+        guarantee create()'s own docstring already makes for that
+        field, just re-affirmed on the update path.
+
+        Raises IllegalTransitionError for anything other than a pending
+        proposal: once approved, rejected, or applied, payload is an
+        honest record of what was actually decided and must never be
+        silently rewritten out from under that decision -- discovered
+        2026-09-19 when a real first-publish proposal sat pending for
+        hours while new Teams messages arrived, and every rerun kept
+        regenerating the digests table's own content while this
+        proposal (the thing actually sent) stayed frozen at its
+        creation-time snapshot. See DECISION_LOG.md.
+        """
+        current = self.get(proposal_id)
+        if current.status != PENDING:
+            raise IllegalTransitionError(
+                f"proposal_id={current.id!r} is {current.status!r}; refusing to refresh its payload -- "
+                "only a still-pending proposal's payload may be replaced with regenerated content"
+            )
+        new_source_refs = source_refs if source_refs is not None else list(current.source_refs)
+        conn = get_connection(self._db_path)
+        try:
+            conn.execute(
+                "UPDATE proposals SET payload = ?, source_refs = ? WHERE id = ?",
+                (json.dumps(payload), json.dumps(new_source_refs), proposal_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get(proposal_id)
+
     def get(self, proposal_id: str) -> Proposal:
         conn = get_connection(self._db_path)
         try:

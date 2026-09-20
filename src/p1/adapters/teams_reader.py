@@ -23,6 +23,30 @@ class DeltaTokenExpiredError(Exception):
     token for that channel and restart with a full sync (delta_token=None)."""
 
 
+class DeltaLinkRejectedError(Exception):
+    """Raised by a reader when a pagination continuation IT JUST HANDED
+    BACK (an @odata.nextLink from the previous response, not a token the
+    caller supplied from storage) is itself rejected on the very next
+    call. Distinct from DeltaTokenExpiredError: that one is a
+    previously-valid token going stale over time (HTTP 410), fixed by
+    clearing it and doing a full resync. This one is the backend handing
+    back a broken continuation link within the same sync attempt --
+    resyncing from scratch does not help, because the same broken link
+    shape gets produced again immediately (confirmed 2026-09-20 against
+    a brand-new, empty Teams channel: Microsoft Graph's chatMessage
+    delta endpoint returned an @odata.nextLink alongside an empty
+    "value": [], then rejected that exact link with 400 "Parameter
+    'DeltaToken' not supported for this request." -- a known, open
+    Graph-side bug, not specific to this codebase; see
+    https://learn.microsoft.com/en-us/answers/questions/1184831/ and
+    DECISION_LOG.md's own 2026-09-20 entry).
+
+    The correct response is to stop paging for this sync attempt --
+    treat the last successfully-read page as the end -- and persist
+    whatever delta position was already known-good before this
+    rejection, not the rejected link itself."""
+
+
 class TeamsChannel(BaseModel):
     id: str
     display_name: str

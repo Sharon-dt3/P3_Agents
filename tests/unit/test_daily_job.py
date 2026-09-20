@@ -280,6 +280,108 @@ def test_calling_again_after_publish_reports_already_published_and_does_not_rese
     assert len(publisher.calls) == 1  # still just the one real send
 
 
+# --- a still-pending proposal's payload tracks digest regeneration ---------
+
+
+def test_a_rerun_before_approval_refreshes_the_pending_proposals_payload(db_path, monkeypatch):
+    """CHN-32-adjacent finding, 2026-09-19: a real first-publish proposal
+    sat pending for hours while new Teams messages arrived; every rerun
+    regenerated the digests table's own content but left this proposal
+    -- the thing guarded_send() actually posts -- frozen at its
+    creation-time snapshot. Isolating from the real digest-generation
+    pipeline (as _NeverCalledGateway already does for the no-messages
+    case) by faking generate_and_persist_daily_summary directly, since
+    what changed is daily_job.py's own handling of an existing pending
+    proposal, not digest generation itself.
+    """
+    config = _config()
+    _seed_channel(db_path, config.channel_id)
+    publisher = _RecordingPublisher()
+
+    contents = ["draft one -- nothing happened yet", "draft two -- a message arrived since"]
+    call_count = {"n": 0}
+
+    class _FakeDigestResult:
+        def __init__(self, content):
+            self.content = content
+            self.section_lines = {}
+
+    def _fake_generate_and_persist(*args, **kwargs):
+        # Regeneration happens on every call by design (this function's
+        # own module docstring), including the post-approval rerun that
+        # actually triggers the send -- so once the queued drafts run
+        # out, keep returning the last one rather than raising
+        # StopIteration, exactly like a real unchanged channel would
+        # regenerate the same content again.
+        idx = min(call_count["n"], len(contents) - 1)
+        call_count["n"] += 1
+        return _FakeDigestResult(contents[idx])
+
+    import p1.publishing.daily_job as daily_job_module
+
+    monkeypatch.setattr(daily_job_module, "generate_and_persist_daily_summary", _fake_generate_and_persist)
+
+    first = _run(config.channel_id, config, DAY1, db_path, publisher=publisher)
+    assert first.status == AWAITING_APPROVAL
+    proposal_store = ProposalStore(db_path)
+    key = f"{config.channel_id}:{DAY1.isoformat()}:daily_publish"
+    proposal_before = proposal_store.get_by_idempotency_key(key)
+    assert proposal_before.payload["content"] == "draft one -- nothing happened yet"
+
+    second = _run(config.channel_id, config, DAY1, db_path, publisher=publisher)
+    assert second.status == AWAITING_APPROVAL
+    assert publisher.calls == []  # still never sends while pending
+    assert _proposal_row_count(db_path, key) == 1  # refreshed in place, not duplicated
+
+    proposal_after = proposal_store.get_by_idempotency_key(key)
+    assert proposal_after.id == proposal_before.id
+    assert proposal_after.payload["content"] == "draft two -- a message arrived since"
+
+    # Approving and sending now must post the REFRESHED content, not
+    # the stale snapshot from the moment this proposal was created.
+    proposal_store.approve(proposal_after.id, approver_id="priya")
+    third = _run(config.channel_id, config, DAY1, db_path, publisher=publisher)
+    assert third.status == PUBLISHED
+    assert publisher.calls[-1][1] == "draft two -- a message arrived since"
+
+
+def test_after_approval_a_rerun_never_touches_the_proposals_payload_again(db_path, monkeypatch):
+    """The safety half of the same fix: refresh_payload() is reachable
+    only through the `elif proposal.status == PENDING` branch, so once a
+    human has approved (or rejected, or it's been applied), a later
+    rerun -- even one where digest generation would produce different
+    content -- must never rewrite what was actually decided."""
+    config = _config()
+    _seed_channel(db_path, config.channel_id)
+    publisher = _RecordingPublisher()
+
+    contents = iter(["draft one -- approved on this content", "draft two -- must never appear"])
+
+    class _FakeDigestResult:
+        def __init__(self, content):
+            self.content = content
+            self.section_lines = {}
+
+    def _fake_generate_and_persist(*args, **kwargs):
+        return _FakeDigestResult(next(contents))
+
+    import p1.publishing.daily_job as daily_job_module
+
+    monkeypatch.setattr(daily_job_module, "generate_and_persist_daily_summary", _fake_generate_and_persist)
+
+    _run(config.channel_id, config, DAY1, db_path, publisher=publisher)
+    proposal_store = ProposalStore(db_path)
+    key = f"{config.channel_id}:{DAY1.isoformat()}:daily_publish"
+    proposal = proposal_store.get_by_idempotency_key(key)
+    proposal_store.approve(proposal.id, approver_id="priya")
+
+    result = _run(config.channel_id, config, DAY1, db_path, publisher=publisher)
+
+    assert result.status == PUBLISHED
+    assert publisher.calls[-1][1] == "draft one -- approved on this content"
+    assert proposal_store.get(proposal.id).payload["content"] == "draft one -- approved on this content"
+
+
 # --- subsequent days run unattended -----------------------------------------
 
 

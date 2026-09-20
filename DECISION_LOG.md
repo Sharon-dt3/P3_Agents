@@ -3590,3 +3590,1555 @@ exercised for real. This same email-vs-GUID roster format question
 will recur for every future real channel config -- CHN-25/this entry's
 resolution is the pattern to follow (GUID + comment), not a one-off
 special case for `p1-agent-test` alone.
+
+## 2026-09-19 -- CHN-26: the first real Bedrock call failed, and the gateway's own fallback logging hid why
+
+**What happened.** The first real run of
+`scripts/run_live_pipeline_p1_agent_test.py` to reach classification
+against a genuine ingested message (a real human message, correctly
+matched to the fixed roster from CHN-25) failed to get a usable
+response from either configured provider:
+
+```
+Primary provider exhausted; degrading to local Ollama fallback
+...
+httpx.ConnectError: [Errno 61] Connection refused
+p1.llm.gateway.LLMGatewayError: Ollama request failed: [Errno 61] Connection refused
+```
+
+Bedrock (the primary, configured via `LLM_PROVIDER=bedrock`) failed
+first; the gateway's designed degrade-to-local-Ollama fallback then
+also failed, because there is no local Ollama server running on the
+user's machine. That second failure is expected and not a bug -- the
+fallback is a last resort, not a guarantee. The real problem is what
+happened to the *first* failure.
+
+**A real bug found while trying to diagnose it.**
+`LLMGateway.generate()`'s degrade path was `except LLMGatewayError:`
+-- no bound exception name -- so the actual reason Bedrock rejected
+the call (an `APIStatusError`, wrapped by `_call_messages_api` into an
+`LLMGatewayError` carrying the real HTTP status/message) was silently
+discarded. Only `logger.warning("Primary provider exhausted; degrading
+to local Ollama fallback")` was ever logged -- a fixed string with no
+information about *why*. The user's terminal only ever showed the
+unrelated Ollama connection-refused error, with no way to tell whether
+Bedrock failed on bad credentials, a disabled model, a wrong region, a
+malformed inference-profile ARN, or something else entirely. This
+would have made every future real provider failure equally
+undiagnosable, not just this one.
+
+**Fix.** `except LLMGatewayError:` -> `except LLMGatewayError as exc:`,
+and the warning now includes `self.provider` and `exc` itself:
+`"Primary provider (%s) exhausted: %s; degrading to local Ollama
+fallback"`. The original exception's message (already a clear string
+built by `_call_bedrock`/`_call_anthropic`/`_call_messages_api`) now
+always reaches the log, whichever provider is primary.
+
+**Judgment calls.** Fixed in place rather than only disclosed -- this
+is a pure logging-completeness bug (information already computed and
+then thrown away), not a design question.
+
+**Non-vacuousness.** Reverted the fix, re-ran the new test
+(`test_degrading_logs_the_primary_providers_real_failure_reason`), and
+confirmed it failed showing exactly the same generic, uninformative
+message this entry describes (`'Primary provider exhausted; degrading
+to local Ollama fallback'`, missing the injected `"bedrock exhausted
+(simulated)"` reason); reverted back and re-confirmed all 5 tests in
+`test_llm_gateway_degrade.py` green.
+
+**Verified.** `uv run pytest tests/unit/test_llm_gateway_degrade.py`:
+5 passed. Full suite: 454 passed, 2 skipped, ruff clean, plus the same
+one pre-existing, already-documented, unrelated
+`test_approval_dashboard_app.py` order-dependent flake (unchanged by
+this entry).
+
+**Not done, on purpose.** The actual reason the real Bedrock call
+failed is still unknown -- this entry only fixes the gateway's ability
+to report it. The next live run will surface the real message (AWS
+auth, model-access, region, or ARN issue are all still live
+possibilities) and that specific cause still needs diagnosing and
+fixing once seen. Separately, `p1-agent-test`'s config currently has a
+temporary, uncommitted `working_days` override (adding "Sat") to allow
+testing on a non-working day -- deliberately left uncommitted, to be
+reverted once the model-call issue is resolved and a real digest has
+actually been produced end to end.
+
+## 2026-09-19 -- CHN-26 (follow-up): real Bedrock call blocked on an IAM permission the demo credentials cannot self-grant
+
+**Finding.** With CHN-26's logging fix in place, the real Bedrock call
+now reports its actual failure clearly:
+
+```
+Bedrock API error: Error code: 403 - {'Message': 'User:
+arn:aws:iam::619042036275:user/p1-agent-bedrock-demo is not authorized
+to perform: bedrock:InvokeModel on resource:
+arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-20250514-v1:0
+because no identity-based policy allows the bedrock:InvokeModel action'}
+```
+
+The AWS credentials in `.env` (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`,
+provided by the user's lead, per SPN-02's original entry) belong to IAM
+user `p1-agent-bedrock-demo`, which has no policy granting
+`bedrock:InvokeModel` at all. This is an AWS account permissions gap,
+not a bug in this codebase -- `LLMGateway._call_bedrock`'s config
+validation, client construction, and request shape are all already
+confirmed correct (SPN-02, CHN-26); the request reaches AWS and is
+rejected by IAM before Bedrock itself ever runs the model.
+
+**A resource-ARN wrinkle worth recording.** The 403 named
+`arn:aws:bedrock:us-east-1::foundation-model/...`, not the
+`us-east-2` inference-profile ARN configured in `.env`'s
+`BEDROCK_MODEL_ID`. This is expected, not a second bug: `us.` prefixed
+Bedrock inference profiles are cross-region and route to whichever
+underlying regional foundation-model endpoint serves the request, so
+IAM needs permission on both the inference-profile resource and the
+foundation-model resource(s) it can land on -- not just the profile
+ARN itself. Passed along to the user as the two-resource IAM policy
+recommendation below.
+
+**Confirmed the demo credential cannot self-remediate.** At the user's
+own request, a one-off diagnostic (`try_self_grant_bedrock.py`, run
+directly by her, deleted after use, never committed) attempted
+`iam:PutUserPolicy` against the same `p1-agent-bedrock-demo` user using
+its own credentials -- cleanly rejected with a second, unrelated
+AccessDenied (`iam:PutUserPolicy` is itself not granted). This is the
+expected and correct behaviour for a properly scoped-down demo
+credential (a key that could grant itself more permissions would be a
+real security gap on the provisioning side), not something to work
+around.
+
+**Judgment calls.** Did not attempt any further workaround (e.g.
+suggesting a different model ID, silently switching providers, or
+retrying with elevated assumptions) -- this is squarely the AWS
+account owner's action to take, not a code or architecture decision.
+Gave the user exact, copy-pasteable guidance (an IAM policy JSON
+covering both required resource ARNs, plus a reminder to check
+Bedrock's separate per-region "Model access" grant) to relay to her
+lead, and suggested a plain Anthropic API key as a lower-friction
+alternative if IAM changes are slow to get approved on his end.
+
+**Verified.** No code change in this entry -- confirmed via the user's
+own real terminal output that the gateway's error reporting (CHN-26)
+now surfaces enough detail to diagnose a real infrastructure problem
+precisely, which was the entire point of that fix.
+
+**Not done, on purpose, and blocked on an external party.** The full
+pipeline still cannot produce a real digest until either: the user's
+lead attaches the `bedrock:InvokeModel`/`InvokeModelWithResponseStream`
+policy to `p1-agent-bedrock-demo` (covering both resource ARNs above)
+and confirms Bedrock model access is granted for Claude Sonnet 4 in the
+relevant region(s); or the user obtains a plain `ANTHROPIC_API_KEY` and
+switches `LLM_PROVIDER=anthropic` instead. Everything else in the
+pipeline -- real Graph ingestion, roster matching against the real AAD
+object id (CHN-25), the working-day gate, and error surfacing -- is
+confirmed working correctly up to this exact point. `p1-agent-test`'s
+`working_days` still carries the temporary, uncommitted Saturday
+override (CHN-25/CHN-26); still deliberately left in place and
+unreverted until a real digest actually completes end to end.
+
+## 2026-09-19 -- CHN-27: found and fixed before it could waste an Ollama install -- structured-output requests silently dropped their schema on the Ollama path
+
+**Context.** With the real Bedrock call blocked on an external AWS IAM
+permission gap (CHN-26) that the user cannot resolve herself, and a
+second identical "still not fixed" round-trip with her lead, she chose
+to unblock herself with a fully local alternative: install Ollama and
+run a model on her own machine, sidestepping AWS entirely. Investigated
+whether `LLM_PROVIDER=ollama` would actually work for this codebase's
+real capabilities before recommending she spend the time downloading a
+multi-GB local model.
+
+**Finding.** It would not have worked. Every real capability in this
+codebase (classification, daily-summary generation) calls
+`generate_structured()`, which always sends `tools`/`tool_choice` and
+expects the response text to already be schema-valid JSON. Anthropic
+and Bedrock satisfy this via native tool-calling (the model returns a
+structured `tool_use` block, dumped straight to JSON). `_call_ollama`,
+however, didn't even accept `tools`/`tool_choice` as parameters --
+`_call_provider`'s dispatch called it as `self._call_ollama(prompt,
+system, max_tokens, temperature)`, silently dropping both. Ollama's
+`/api/generate` has no native tool-calling API, and nothing in this
+codebase's prompts (see `prompts/chn09_classify_message/v1.md`) states
+the expected JSON shape in plain text -- that information only ever
+lived in the `tools` parameter. So a real Ollama call for
+classification would have received a prompt with zero indication of
+what shape to answer in, `generate_structured()`'s `json.loads()` would
+have failed on every one of its 3 retry attempts, and the whole call
+would have ended in `StructuredOutputError` -- discovered here, before
+the user spent time on an install and download that would have failed
+at the very last step, not after.
+
+**Fix.** `_call_ollama` now accepts `tools`/`tool_choice` and, when
+present, appends the tool's JSON schema to the prompt as an explicit
+instruction (the closest equivalent Ollama's plain-completion API
+supports to native tool-calling). Also added
+`_strip_markdown_json_fence()`, applied to every Ollama response:
+local/open models often wrap JSON in a ` ```json ... ``` ` fence
+despite being told not to, which would otherwise burn one of
+`generate_structured()`'s three retry attempts on a purely cosmetic
+wrapper. Added a `_make_ollama_client()` seam (mirroring this repo's
+existing `reader_factory`/`publisher_factory` testability pattern) so
+tests can inject an `httpx.MockTransport` instead of the previous
+inline `httpx.Client(...)` construction, which had no way to be
+intercepted at all.
+
+**Judgment calls.** Embedding the schema as a plain-text instruction
+(rather than, say, requiring a tool-calling-capable local model or
+refusing structured requests on the ollama provider) was chosen because
+it's the same shape of fix Ollama's own ecosystem generally recommends
+for models without native function-calling, and it degrades gracefully
+-- a capable instruction-following local model (e.g. llama3:8b or
+better) should follow it reliably; a weaker one will still fail
+`generate_structured()`'s validation cleanly (an explicit
+`StructuredOutputError`) rather than silently miscounting like the
+prior, untested state would have.
+
+**Non-vacuousness.** Reverted the fix (old `_call_ollama` signature and
+body, no seam) and re-ran the four new tests in
+`test_llm_gateway_ollama_structured.py`: all four failed, three with a
+real `ConnectionRefused` from the pre-fix code trying to open an actual
+TCP connection to `localhost:11434` -- proving these tests weren't
+already accidentally passing against unrelated mocking. Reverted back
+and re-confirmed all four green.
+
+**Verified.** `uv run pytest tests/unit/test_llm_gateway_ollama_structured.py`:
+4 passed. Full suite: 458 passed, 2 skipped, ruff clean (one
+auto-fixable import-order nit in the new test file, fixed), plus the
+same one pre-existing, already-documented, unrelated
+`test_approval_dashboard_app.py` order-dependent flake (unchanged by
+this entry).
+
+**A repo-hygiene note, unrelated to the fix itself.** This session's
+device-bridge shell and the user's own terminal share the same
+`.venv` (the connected folder is the same physical files on both
+sides), so each side's `uv run` had been silently rebuilding the
+other's virtual environment out from under it every time either one
+ran a command -- explaining the repeated "Removed virtual
+environment... Creating virtual environment..." churn seen in both
+this session's tool output and the user's own terminal output all
+session. Worked around from this side by pointing `uv` at a separate,
+throwaway environment (`UV_PROJECT_ENVIRONMENT=/tmp/...`) for the rest
+of this session, so verification here no longer disturbs whatever
+state the user's own terminal has. Not a code bug, and not something
+this entry attempts to fix in the repo itself.
+
+**Not done, on purpose.** Ollama has still never been exercised against
+a real, running local server -- this entry fixes a structural gap
+found by inspection and proven with a fully mocked test suite, not by
+a real end-to-end local run. The user still needs to actually install
+Ollama, pull a model, and set `LLM_PROVIDER=ollama` (plus optionally
+`OLLAMA_MODEL` if not using the default `llama3:8b`) before this can be
+proven live. The AWS Bedrock permission gap (CHN-26) remains open and
+unresolved on her lead's end; `p1-agent-test`'s `working_days` still
+carries its temporary, uncommitted Saturday override, unreverted until
+a real digest completes end to end via whichever provider ends up
+working.
+
+## 2026-09-19 -- CHN-32: persisting the participation ledger for real-world visibility surfaced a real, previously-latent FK bug in its own write path
+
+**Context.** `build_and_persist_ledger()`/`ParticipationStore` have
+existed since CHN-10 but were never actually called by any production
+job -- `daily_summary.py`, `nudge_job.py`, and `escalation_job.py` all
+deliberately read the ledger fresh via `build_ledger()` instead, "so a
+digest never reports a stale ledger" (daily_summary.py's own
+docstring). That's a correct, deliberate design choice for those
+callers, but it also meant the `participation` table itself had never
+been exercised end to end against real data -- it stayed empty even
+after real messages, a real digest, and a real pending proposal already
+existed for `p1-agent-test`. Wanted a real, human-visible row in that
+table (via sqlite_web / the Supabase mirror set up this session) rather
+than only ever seeing participation state as prose inside a digest, so
+added one call to `build_and_persist_ledger()` at the end of
+`scripts/run_live_pipeline_p1_agent_test.py`, clearly commented as
+visibility-only and never a dependency of the digest or any downstream
+job.
+
+**Finding.** That one addition immediately failed two existing tests
+with `sqlite3.IntegrityError: FOREIGN KEY constraint failed` inside
+`ParticipationStore.record()`. Root cause: `participation.member_id` is
+a foreign key into `members(id)`, and the only thing that ever inserts
+a `members` row is `MessageStore._ensure_member_exists()` -- which
+fires per message, for whoever authored it. A roster member who has
+*never* posted a single message -- the exact, ordinary case this table
+exists to record as `no_message` -- has no row in `members` at all, so
+persisting their non-responder state crashed outright. This was a real,
+previously-latent bug in `ParticipationStore`, not something the new
+call introduced: it had simply never been exercised against a roster
+member with zero messages before, because nothing in production ever
+called it.
+
+**Fix.** `ParticipationStore.record()` now does
+`INSERT OR IGNORE INTO members (id, display_name) VALUES (?, ?)` for
+each record's `member_id` immediately before the participation upsert
+-- the identical, already-proven pattern `MessageStore._ensure_member_exists`
+uses (the id standing in as its own placeholder display name until a
+richer sync fills one in), just applied at the one other write path
+that shares the same foreign key.
+
+**Judgment calls.** Fixed centrally in `ParticipationStore` rather than
+in the calling script, so any future caller of `build_and_persist_ledger()`
+gets the same protection automatically, matching the precedent
+`MessageStore._ensure_member_exists`'s own docstring sets ("fixing it
+here, centrally, in the one place... means no caller needs to pre-seed
+anything, ever again"). Kept `build_ledger()` itself, and every
+production job's use of it, completely untouched -- this is additive,
+opt-in persistence for visibility, not a change to detection, nudging,
+or escalation behaviour.
+
+**Non-vacuousness.** Reverted the fix (removed the `INSERT OR IGNORE`
+call) and re-ran `tests/unit/test_run_live_pipeline_p1_agent_test.py`:
+the same two tests failed with the identical `IntegrityError` this
+entry describes. Restored the fix and re-confirmed all 4 tests in that
+file, plus `test_participation_edge_cases.py` and
+`test_participation_against_fixtures.py`, green (10 passed).
+
+**Verified.** Full suite: 458 passed, 2 skipped, ruff clean, plus the
+same one pre-existing, already-documented, unrelated
+`test_approval_dashboard_app.py` order-dependent flake (unchanged by
+this entry).
+
+**Not done, on purpose.** `build_ledger()` and every real production
+caller remain exactly as they were -- this entry only makes the
+already-computed ledger additionally visible in the database for a
+human looking at it directly, and fixes the one bug that surfaced the
+moment that visibility was actually attempted.
+
+## 2026-09-19 -- CHN-17/SPN-08: a pending publish proposal never refreshed its payload after creation, even though its own digest kept regenerating
+
+**Context.** Testing the real write path against `p1-agent-test` for
+the first time (CHN-22's Power Automate publisher, wired to a real
+flow URL, via the CHN-25 Streamlit approval dashboard) surfaced that
+the channel's first-ever `daily_digest_publish` proposal, created
+06:37:33 UTC on 2026-09-19 before that day had any real Teams activity,
+still showed "no updates were posted today" hours later -- after two
+real messages had actually been posted and correctly classified. Every
+rerun of `scripts/run_live_pipeline_p1_agent_test.py` in between
+regenerated the `digests` table's own row with the right, up-to-date
+content (confirmed directly against the database), so the regeneration
+itself was working. The proposal shown to the human approver, and the
+one `guarded_send()` would actually post from, was a different story.
+
+**Finding.** `run_daily_digest_job()` (`src/p1/publishing/daily_job.py`)
+only ever builds `publish_payload` (the dict containing `content`)
+inside the `if proposal is None:` branch -- the one-time creation path.
+Once a proposal already exists for that channel/day (found via its
+idempotency key), every subsequent call skips straight past that block
+and reuses the existing proposal object untouched, payload included.
+The module's own docstring claims "content can be regenerated any
+number of times right up until it is approved" -- true of the
+`digests` table row, never true of the proposal's own payload, which is
+what a human actually reviews and what `send_fn()` actually posts. A
+proposal created early in the day (or during quiet mock/demo testing)
+and left pending for any length of time while real messages arrive
+would be approved and sent with stale, incorrect content -- not a
+display bug, a real correctness bug in the one thing this whole HITL
+gate exists to protect.
+
+**Fix.** Added `ProposalStore.refresh_payload(proposal_id, *, payload,
+source_refs=None)` (`src/p1/approval/proposals.py`): updates a
+proposal's `payload` (and `source_refs`, kept in sync with it) in
+place, but only when the proposal's current status is still `PENDING`
+-- raising `IllegalTransitionError` otherwise, the same exception
+family `approve()`/`reject()`/`apply()` already raise for an illegal
+move. `original_model_output` is never touched, preserving SPN-08's own
+guarantee that "what the model originally said" stays readable no
+matter how many times payload is refreshed before a decision is made.
+`run_daily_digest_job()` now computes `source_refs`/`publish_payload`
+unconditionally on every call (not just inside the creation branch),
+and added an `elif proposal.status == PENDING:` branch that calls
+`refresh_payload()` with the freshly regenerated content whenever an
+existing proposal is still awaiting a decision. `send_fn()` already
+re-fetched the proposal fresh from the store immediately before
+posting, so no change was needed there -- it now simply reads the
+refreshed row.
+
+**Judgment calls.** Restricted the refresh to `PENDING` only, on
+purpose: an `approved`, `rejected`, or `applied` proposal is a real
+record of a decision someone actually made, and must never be
+silently rewritten out from under that decision by a later rerun --
+matching SPN-08's own load-bearing guarantee (see `proposals.py`'s
+module docstring) more than it extends it. Refreshed `source_refs`
+alongside `payload` rather than leaving it stale, since both are
+computed from the same `digest_result` in the same block and a
+grounding audit trail that no longer matches the content it is meant
+to back would just be a smaller, quieter version of the same bug.
+
+**Non-vacuousness.** Temporarily disabled the new `elif` branch
+(`elif False:`) and re-ran
+`test_a_rerun_before_approval_refreshes_the_pending_proposals_payload`:
+it failed exactly as the real bug behaved -- the proposal's payload
+stayed at the first draft ("draft one") instead of picking up the
+second ("draft two"). Restored the real branch and reconfirmed all 29
+tests in `test_daily_job.py` + `test_proposals.py` green, including
+`test_after_approval_a_rerun_never_touches_the_proposals_payload_again`
+(the safety half: an already-approved proposal's payload must never be
+touched by a later rerun, even one whose digest regeneration would
+produce different content).
+
+**Verified.** Full suite: 461 passed, 2 skipped (same pre-existing
+skips as before), ruff clean.
+
+**Not done, on purpose.** `DigestStore`/the `digests` table's own
+regeneration behaviour is untouched -- this entry only makes the
+*proposal's* payload track what that table already does correctly.
+Nudge and escalation proposals (`nudge_job.py`, `escalation_job.py`)
+build their proposals differently (no idempotency-key lookup against
+an existing pending proposal before creating one) and were not audited
+for the same class of bug in this pass -- flagged for a follow-up look,
+not assumed safe by association.
+
+## 2026-09-19 -- CHN-25: the approval dashboard never loaded `.env`, so every real approval silently posted through the mock publisher instead of Teams
+
+**Context.** Two digest proposals were approved for real through
+`app/approval_dashboard.py` against the real `p1-agent-test` channel,
+and nothing appeared in the actual Teams channel. `.env` was confirmed
+correct (`TEAMS_PUBLISHER_MODE=power_automate`, a `POWER_AUTOMATE_FLOW_URL`
+whose signature matches the live "P1 Teams Publisher" flow's real
+trigger URL byte-for-byte, a `GRAPH_TEAM_ID` matching the flow's own
+Post-message action), and the flow itself was confirmed correctly
+built by direct inspection in the Power Automate maker portal. Its
+28-day run history contained no run at all for either approval-time
+send.
+
+**Finding.** `app/approval_dashboard.py` was the one script in the
+entire project that never called `load_dotenv()` -- every other entry
+point (`scripts/*.py`, `src/p1/llm/gateway.py`,
+`src/p1/api/copilot_studio_api.py`) does, immediately after its own
+`sys.path.insert(...)` (confirmed via
+`grep -rn "load_dotenv" --include=*.py .`, excluding `.venv`). Streamlit
+runs the dashboard as a long-lived process, so without that call it
+only ever saw whatever was already in the OS environment at launch --
+never `.env`'s contents. `src/p1/adapters/factory.py`'s
+`get_teams_publisher()` reads `TEAMS_PUBLISHER_MODE` fresh on every
+call with no caching, and defaults to `"mock"` (`LogPublisher`,
+writing to `data/outbound_log.jsonl`) whenever that variable is unset.
+Confirmed root cause, not just correlation: both real approval-time
+send timestamps in `data/outbound_log.jsonl`
+(`2026-09-19T15:24:20.458432+00:00`,
+`2026-09-19T15:27:28.354993+00:00`) match `write_log`'s two `"sent"`
+rows to the millisecond -- proving the send genuinely happened, just
+through the mock adapter instead of `PowerAutomateTeamsPublisher`.
+
+**Fix.** Added `from dotenv import load_dotenv` + a `load_dotenv()`
+call near the top of `app/approval_dashboard.py`, mirroring the same
+convention every other entry point already follows.
+
+**Judgment calls.** This fix alone would have created a new, more
+dangerous problem: `tests/unit/test_approval_dashboard_app.py` drives
+the real `app/approval_dashboard.py` script headlessly via
+`streamlit.testing.v1.AppTest.from_file(...)`, and
+`test_dashboard_lists_and_approves_a_pending_nudge` clicks the real
+Approve button, which falls through to `approval_service.approve_and_send()`
+-> `get_teams_publisher()` with no publisher override. Neither test in
+that file previously set `TEAMS_PUBLISHER_MODE`. Once
+`app/approval_dashboard.py` calls `load_dotenv()`, running that test
+under `pytest` on the real project checkout would, without this
+correction, have read the developer's own `.env` (`load_dotenv()`
+walks up from the calling file's own directory looking for `.env`,
+regardless of pytest's working directory, and would find the repo
+root's `.env` from `app/`) and set `TEAMS_PUBLISHER_MODE=power_automate`
+for the whole test process -- meaning an ordinary `pytest` run could
+have fired a real POST at the live Power Automate flow. Fixed by
+adding `monkeypatch.setenv("TEAMS_PUBLISHER_MODE", "mock")` to both
+tests in that file, before `AppTest.from_file(...).run()` is ever
+called. This is safe specifically because `python-dotenv`'s
+`load_dotenv()` defaults to `override=False` (confirmed via
+`inspect.signature`) -- it never overwrites a variable
+`monkeypatch.setenv` already set, so pinning the mode first guarantees
+the dashboard's own `load_dotenv()` call is a no-op for this one
+variable during the test.
+
+**Non-vacuousness.** Root cause confirmed by the millisecond-level
+timestamp match described above (an independent, pre-existing piece
+of evidence, not something manufactured for this fix) rather than by
+disabling and re-enabling the fix itself, since the dashboard is a
+long-lived interactive process outside the automated test suite and
+not something this pass could safely bounce live against the real
+Power Automate flow again just to reproduce the bug.
+
+**Verified.** `python3 -m py_compile` clean on both changed files.
+Full test suite + ruff still pending a run by the project owner
+(cloud-side `device_bash` cannot execute against the real project
+venv -- see earlier entries), which is also the only way to prove
+`test_dashboard_lists_and_approves_a_pending_nudge` still passes and
+does not attempt any real network call.
+
+**Not done, on purpose.** The Streamlit process already running on the
+project owner's machine will not pick up this fix until it is
+restarted. `st.text(content)` in the message-preview expander still
+renders citation markdown as raw text instead of clickable links
+(`st.markdown`) -- flagged, not yet fixed. `CURRENT_USER_ID`'s
+placeholder default of `"priya"`, the flow's hardcoded direct-message
+template body, and the stray `.env.bak` left over from the earlier
+Ollama switch are all still open from prior entries.
+
+## 2026-09-19 -- CHN-17/SPN-08: a human-approved publish never marked its digest published, so "auto-approve after the first publish" never actually engaged
+
+**Context.** Found while proving the `load_dotenv()` fix live: after
+`p1-agent-test` already had two applied (approved and sent) daily
+digests -- 2026-09-17 and 2026-09-19 -- running the live pipeline for a
+third day (2026-09-21) still came back `awaiting_approval` instead of
+publishing unattended, contradicting this module's own documented
+design ("first-publish approval means no channel ever receives an
+unexpected bot post" -- meant to apply once per channel, not every day
+after; see the CHN-17 entries above).
+
+**Finding.** `run_daily_digest_job()` (`daily_job.py`) only calls
+`digest_store.mark_published()` from its own success path -- the tail
+end of the exact same function call that both creates a proposal and
+(on every day after the channel's first) auto-approves and sends it in
+one go. A proposal a *person* approves -- through the Streamlit
+dashboard or the Copilot Studio connector, the only two real surfaces
+that ever call `approval_service.approve_and_send()` -- never runs back
+through `run_daily_digest_job()` at all. Confirmed by reading
+`approve_and_send()`'s full body: it calls `ProposalStore.approve()`,
+writes an audit row, and sends via `guarded_send()` -- no reference to
+`DigestStore` anywhere. So `has_ever_published(channel_id)` stayed
+False forever for any channel whose publishes are only ever approved by
+a human, which in practice is every real channel this project has ever
+run against -- the "auto-approve every day after the first" behavior
+had never actually been reachable in real use, only in the
+`run_daily_digest_job()`-reruns-itself-same-day case golden case
+CHN-18/GC6 exercises with a scripted approval, not a real dashboard
+click.
+
+**Fix.** `approve_and_send()` (`src/p1/approval/service.py`) now takes
+an optional `digest_store: DigestStore | None = None` parameter
+(defaulting to `DigestStore(db_path)`, matching `proposal_store`'s and
+`config_store`'s own pattern), and after a `daily_digest_publish`
+proposal sends successfully, calls
+`digest_store.mark_published(idempotency_key=f"{channel_id}:{date}:daily",
+published_at=<now, UTC>)` -- reconstructing the digest's own
+idempotency key (`...:daily`, CHN-13's key) from the proposal's payload,
+deliberately distinct from the proposal's own `...:daily_publish` key.
+Nudge and escalation approvals are untouched -- gated on
+`proposal.type == "daily_digest_publish"` specifically, since
+`has_ever_published()` is a concept CHN-17's daily-digest rule alone is
+built on.
+
+**Judgment calls.** `DigestStore.mark_published()` is a plain
+`UPDATE ... WHERE idempotency_key = ?` with no existence check, so this
+call is a safe no-op if no matching `digests` row exists yet -- not a
+concern in real use, since `generate_and_persist_daily_summary()`
+(CHN-13) always writes that row before `run_daily_digest_job()` ever
+creates the proposal this function is approving. Placed the call after
+`guarded_send()` succeeds, not before, so a `send_failed`/`refused`
+outcome never marks a digest published that was never actually sent.
+
+**Non-vacuousness.** Temporarily disabled the new block
+(`if False and proposal.type == ...`) and re-ran
+`test_approve_and_send_a_channel_post_marks_the_digest_published`: it
+failed exactly as the real bug behaved --
+`has_ever_published(CHANNEL_ID)` stayed `False` after a successful
+`"sent"` approval. Restored the real code and reconfirmed all 7 tests
+in `test_approval_service.py` green.
+
+**Verified.** Full suite: 462 passed, 2 skipped (same pre-existing
+skips), ruff clean.
+
+**Not done, on purpose.** This only fixes the gap for
+`daily_digest_publish` proposals specifically -- weekly digests
+(`weekly_summary.py`/`run_weekly_digest_job`, if one exists analogous to
+the daily job) were not audited for the same class of bug in this pass.
+The real, live proof that `p1-agent-test`'s pending 2026-09-21 proposal
+now both sends through the real Power Automate flow AND correctly
+marks the channel as having published (so its *next* due day skips
+approval) is still pending the project owner clicking Approve in the
+now-restarted dashboard and a follow-up live run to confirm the
+auto-approve behavior actually engages this time.
+
+## 2026-09-19 -- CHN-25: the dashboard's P1_DB_PATH pointer to the live database was never actually persisted
+
+**Context.** Immediately after fixing `load_dotenv()` and
+`mark_published()`, restarted `app/approval_dashboard.py` and a real,
+freshly-created pending proposal for `p1-agent-test` (2026-09-21) did
+not appear -- the dashboard reported "Nothing awaiting approval." This
+was despite two earlier real approvals (2026-09-17, 2026-09-19) having
+worked correctly through this same dashboard, in an earlier terminal
+session, before this segment's restart.
+
+**Finding.** `app/approval_dashboard.py` resolves its database with
+`DB_PATH = os.environ.get("P1_DB_PATH", DEFAULT_DB_PATH)`, and
+`DEFAULT_DB_PATH` (`src/p1/storage/db.py`) is `data/p1.db` -- the
+shared mock/fixture store every eval/demo/golden-case test reads and
+writes, deliberately kept separate from `data/p1_live.db` (the
+dedicated live database `run_live_ingest_p1_agent_test.py` and
+`run_live_pipeline_p1_agent_test.py` both use, per the README's own
+CHN-05 section). Confirmed via
+`grep -rn "P1_DB_PATH" --include=*.py --include=*.md .` that this
+variable is set in exactly zero persistent places in the repo -- not
+`.env`, not any script, not README.md -- only inside
+`tests/unit/test_approval_dashboard_app.py`'s own
+`monkeypatch.setenv(...)` calls. The only way the two earlier real
+approvals could have worked is an ephemeral `export P1_DB_PATH=...` set
+directly in whatever terminal was running the dashboard at the time --
+never written anywhere durable, so it evaporated the moment that
+terminal was closed and a fresh one (`source .venv/bin/activate` +
+`uv run streamlit run app/approval_dashboard.py`) started the process
+over, silently falling back to the wrong database.
+
+**Fix.** Added `P1_DB_PATH=data/p1_live.db` to `.env` itself, so the
+dashboard resolves the same live database every launch, from a
+committed source, the same way `TEAMS_PUBLISHER_MODE` and everything
+else already does. Also added a paragraph to README.md (next to the
+existing `data/p1_live.db` explanation) documenting this requirement
+explicitly, so a `.env` recreated from scratch on another machine does
+not silently reintroduce the same gap.
+
+**Judgment calls.** Did not change `DEFAULT_DB_PATH` itself, and did
+not make the dashboard default to `data/p1_live.db` in code -- the
+dashboard's whole point (per its own module docstring, CHN-25) is
+being one generic fallback surface usable against whichever database a
+deployment points it at via `P1_DB_PATH`; hardcoding the live path
+into the dashboard itself would quietly break every existing
+mock-fixture test and demo flow that deliberately runs it against
+`data/p1.db`. Fixing the *pointer* in `.env` (a per-deployment config
+concern) rather than the *code* (a shared, tested default) keeps that
+separation intact.
+
+**Non-vacuousness.** Not applicable in the usual disable/reproduce
+sense -- this is a plain, already-reproduced configuration gap (the
+dashboard visibly showed "Nothing awaiting approval" against a
+database confirmed via direct sqlite query to actually have a pending
+row), not a code branch to toggle. Confirmed the exact env var name and
+its complete absence from every persistent source via the grep above
+before writing the fix, rather than guessing.
+
+**Verified.** `.env` now contains `P1_DB_PATH=data/p1_live.db` (checked
+directly). Full proof is the project owner restarting the dashboard
+once more and confirming the 2026-09-21 proposal now appears -- pending
+at time of writing.
+
+**Not done, on purpose.** Did not audit whether any *other* script or
+surface relies on an env var that was similarly only ever set
+ephemerally in a shell rather than persisted -- this entry only closes
+the one instance actually hit.
+
+## 2026-09-19 -- CHN-22/CHN-25: the real write path proven live end to end, for the first time, with real content
+
+**Context.** Closing entry for this day's investigation: after fixing
+the missing `load_dotenv()` call, the unreachable `mark_published()`
+call, and the unpersisted `P1_DB_PATH` pointer (all three entries
+above), the real 2026-09-19 digest -- containing the two genuine
+roster updates, previously stuck in `data/outbound_log.jsonl` instead
+of Teams -- was reposted via a dedicated, disclosed one-off script
+(`scripts/repost_stuck_digest.py`, modelled on
+`scripts/power_automate_smoke_test.py`) that reads the real, already-
+`applied` proposal's content straight out of `data/p1_live.db` and
+posts it directly through `PowerAutomateTeamsPublisher`, bypassing the
+guarded approval path entirely (deliberately -- `applied` is a
+permanent terminal state by design, and this is a manual, disclosed,
+one-time recovery of content that was already legitimately approved,
+not a second automated send).
+
+**Finding.** The flow's HTTP trigger returned `202 Accepted` (as always
+-- a 202 only proves the trigger queued the request, not that the
+Teams post itself succeeded, per this session's earlier finding on
+Power Automate trigger semantics). This time, unlike every earlier
+attempt, the message was independently confirmed to have actually
+landed in the real `p1-agent-test` Teams channel -- the project owner
+pasted back the exact message as it appears in Teams, disclosure line
+and all, matching what the script sent verbatim.
+
+**Verified.** The full write path -- real digest content, generated by
+the real pipeline, approved once for real, reaching the real Teams
+channel through the real Power Automate flow -- is now proven live,
+for the first time this engagement, with an independent human
+confirmation (not just an HTTP status code or a database row).
+
+**Not done, on purpose / still open.** Whether the `[source](url)`
+markdown links actually render as clickable hyperlinks inside Teams
+itself (rather than literal bracket/parenthesis text) has not yet been
+independently confirmed -- the pasted confirmation shows raw markdown
+syntax, which may just be an artifact of how the text was copied out of
+Teams, or may mean the "Post message in a chat or channel" action needs
+to be told its body is Markdown/HTML rather than plain text. This is
+directly relevant to CHN-13's own grounding/citation requirement ("a
+permalink clicked live" per the implementation plan's demo checklist)
+and needs a direct check: click a `[source](...)` link inside the real
+Teams channel and confirm it navigates to the real message, rather than
+displaying as inert text.
+
+## 2026-09-20 -- CHN-17/21/23: nothing ever ran on a schedule -- build_scheduler() was wired but never started, and ingestion/nudges/escalations were never scheduled at all
+
+**Context.** While live-testing the approval flow on p1-agent-test, a
+real message posted mid-morning never showed up in that same day's
+approved digest, and the person testing it correctly asked why
+ingestion appeared to be "ignored" and how nudges could ever be trusted
+if they might be checking stale data.
+
+**Finding.** Two separate gaps, not one: (1)
+`p1.publishing.scheduler.build_scheduler()` correctly builds a real
+APScheduler `BackgroundScheduler` with one `CronTrigger` per channel at
+`daily_digest_time` -- but grepping the entire codebase for `.start()`
+found nothing anywhere that ever calls it. It was built, tested, and
+never deployed. (2) Even started, `build_scheduler()` only ever
+schedules the daily digest job. Ingestion (`sync_channel()`) has never
+been called by anything except a person running
+`run_live_ingest_p1_agent_test.py` / `run_live_pipeline_p1_agent_test.py`
+by hand, and `nudge_job.py`/`escalation_job.py` have never been wired
+into any scheduler either, also only ever run manually. Every real
+run on this channel to date -- ingest, digest, nudge -- has been a
+one-off manual script invocation, never a running process.
+
+**Fix.** `scripts/live_runner_p1_agent_test.py`: one long-running
+process that (a) polls Graph ingestion on a real interval
+(`INGEST_POLL_MINUTES`, default 5) instead of only on a keypress, (b)
+calls `build_scheduler().start()` for the first time anywhere in this
+codebase, and (c) adds a second `CronTrigger`, not previously
+existing anywhere, that runs `run_nudge_job()` then
+`run_escalation_job()` once per working day at the channel's own
+`update_window_end` -- nudge before escalation because
+`escalation_job.py`'s own guarantee 3 requires a person to have already
+been nudged before they can ever be escalated.
+
+**A second, blocking problem found in the course of building this.**
+`scripts/graph_login.py`'s own docstring already flags it: Graph access
+tokens are short-lived (~1hr) and "turning this into something that
+refreshes itself automatically without a human in the loop is a
+separate future step, deliberately not attempted here." An ingestion
+poll running all day cannot work at all under that constraint -- it
+would die silently after about an hour. `p1.adapters.graph_auth` is
+that future step, taken now: a persisted MSAL `SerializableTokenCache`
+(`data/graph_token_cache.bin`, already covered by `.gitignore`'s
+wholesale `data/` rule) seeded by one interactive device-code sign-in
+(`scripts/graph_seed_token_cache.py`, or the live runner's own first
+startup), after which every ingestion poll calls
+`acquire_token_silent()` against the cached refresh token -- no
+browser, no human, no code, until that refresh token itself expires or
+is revoked (Azure AD default ~90 days of inactivity).
+
+**Judgment calls.** Unattended callers (the poll loop itself) always
+pass `allow_interactive=False`: if silent refresh ever fails,
+`get_access_token()` raises `GraphAuthError` and the poll tick logs it
+and skips, rather than ever blocking a background thread on a
+device-code prompt nobody may be watching. Only the live runner's own
+`main()`, running in the foreground at startup with a person at the
+terminal, ever passes `allow_interactive=True`. Both `_poll_ingest()`
+and `_run_nudges_and_escalations()` catch every exception and log
+rather than raise, matching `run_daily_digest_job()`'s own idempotent,
+safe-to-call-repeatedly posture -- one bad tick (a transient Graph
+error, a rate limit) must never take down the whole process.
+
+**Not done, on purpose / still open.** This is a foreground process
+(`Ctrl+C` to stop); running it under a real supervisor (systemd,
+launchd, a container) for actual unattended production use is a
+separate, deliberate future step, not attempted here. Config
+(`daily_digest_time`, `update_window_end`, `working_days`, etc.) is
+read once at startup, same restart-to-pick-up-a-change caveat this log
+already notes for the Streamlit dashboard. `build_scheduler()` itself
+is untouched -- this script only calls it and adds jobs to the
+scheduler it returns, so every existing test of `build_scheduler()`'s
+own wiring still holds unmodified.
+
+## 2026-09-20 -- CHN-03/CHN-05: two gaps found while re-verifying the scope gate and schema against the original delivery plan rows, both fixed and tested
+
+**Context.** Re-checked two delivery-plan rows against the actual code
+rather than the docstrings alone: "Scope gate - allowlisted channels
+only, chats never read" and "SQLite schema and migrations." Both mostly
+held up; two real gaps were found underneath the surface-level claims.
+
+**Gap 1 -- `messages_fts` was declared, never populated.** `0001_initial.sql`
+declares `messages_fts` as an external-content FTS5 table
+(`content='messages', content_rowid='rowid'`). SQLite does not sync an
+external-content table automatically -- nothing anywhere in the
+codebase ever inserted into it, and no query anywhere ever ran a MATCH
+against it. Confirmed live: `SELECT * FROM messages_fts` and
+`count(*)` both read through to the content table and looked populated,
+but `SELECT ... WHERE messages_fts MATCH '...'` -- the only kind of
+query full-text search actually means -- returned nothing at all,
+proving the index itself was empty regardless of what a plain SELECT
+suggested.
+
+**Fix.** `0006_messages_fts_sync.sql`: `AFTER INSERT/UPDATE/DELETE`
+triggers on `messages` keep the FTS index in sync going forward, plus a
+one-time `INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')` to
+backfill every message ingested before this migration existed
+(p1-agent-test's real messages included). Verified directly: seeded a
+db with only migrations 0001-0005 (the "before" state), confirmed a
+MATCH query against a real inserted row found nothing, then applied
+0006 alone and confirmed the same MATCH query found it. Insert, update,
+and delete triggers were each verified independently (search finds new
+content, an edited body re-indexes, a deleted row's content stops
+matching).
+
+**Gap 2 -- `list_replies()`/`get_permalink()` had no independent allowlist
+check.** `ScopedTeamsReader` enforced the allowlist on
+`list_messages()`/`list_channel_members()`, but these two methods take
+only a `message_id`, and the previous version delegated them straight
+to the wrapped reader with no check at all here -- relying entirely on
+`GraphTeamsReader`'s own internal `message_id -> channel_id` cache to
+make an out-of-scope call impossible in practice. That is true only as
+long as every `TeamsReader` implementation happens to enforce that
+invariant itself; `MockTeamsReader.list_replies()`/`get_permalink()`
+do not (they scan every channel's messages, not just allowlisted ones)
+-- exactly the "merely unlikely, not structurally impossible" gap this
+module's own docstring says is the one failure mode that must not
+exist.
+
+**Fix.** `ScopedTeamsReader` now keeps its own
+`_channel_id_by_message_id` record, populated only from messages it has
+itself returned through a gated `list_messages()`/`list_replies()`
+call -- never borrowed from the wrapped reader. `list_replies()`/
+`get_permalink()` now resolve the channel from that record and enforce
+the allowlist against it exactly like `list_messages()` does; a
+message_id this gate has never itself seen is refused outright, audited
+the same way (`entity_type="message"` instead of `"channel"`).
+`tests/unit/test_scope_gate.py`'s old
+`test_list_replies_and_get_permalink_pass_through_without_a_channel_check`
+(a test that named and asserted the bug) was replaced with tests
+proving: an unseen message_id is refused; a legitimately-seen one
+succeeds; and -- the sharpest proof -- `MockTeamsReader`'s own willingness
+to answer an out-of-scope message_id doesn't help, because this gate
+refuses it before ever asking the wrapped reader.
+
+**A third, related bug found and fixed while testing `live_runner_p1_agent_test.py` live (same day).**
+Its first version called `sync_channel()` on every poll tick but never
+`classify_and_persist()` -- a message would land in `messages` but
+never in `classifications`, so it stayed permanently invisible to
+`gather_daily_facts()` (which reads `classifications`, never
+`messages`, directly), no matter how fresh ingestion was. Confirmed
+live: the person's own real 9:55am update was ingested (visible in
+`messages`) but never classified, so it could never have appeared in
+any digest. Fixed by adding the same read-back-and-classify step
+`run_live_pipeline_p1_agent_test.py` already does
+(`_load_channel_messages()` + `classify_and_persist()`) to every
+ingest tick -- safe to re-run against the channel's full known message
+set each time since `ClassificationStore.record()` is an
+upsert-on-message_id, not an append.
+
+**Verified.** Full suite (466 passed, 2 skipped) after all three fixes,
+plus a live functional check of the fixed `_poll_ingest()` against a
+seeded db with a rule-settled (bot) message, confirming the tick now
+logs both an ingest count and a classify count and writes a real
+`classifications` row.
+
+**Not done, on purpose.** `messages_fts` is now populated but nothing
+yet queries it -- no capability in this codebase does full-text search
+today; this fix makes that possible, not exercised. The live runner
+(this same day's earlier entry) still needs restarting to pick up the
+classification fix -- a config/code change made while it's running is
+never picked up live, same restart caveat already noted for it and for
+the Streamlit dashboard.
+
+## 2026-09-20 -- CHN-25's two "not done, on purpose" items closed: agent instructions written, Dataverse table found unnecessary
+
+**Finding.** The 2026-09-18 "solution-aware and wired into the live
+agent" entry left two items open: the agent's own conversational
+instructions were never written, and "the Dataverse table for channel
+config... is still not built." Revisiting the second one against this
+repo's own already-documented design (`connector_contract.md`'s
+"Dataverse table mapping" section, and `config/loader.py`'s own
+docstring) found that a literal Dataverse table was never actually
+required for the config surface to work end to end -- `channel_config`
+(SQLite), reached live through the already-attached "Update Channel
+Config" Tool, already plays that role. Building a separate Dataverse
+table now would create a second copy of the same roster/window/
+exceptions data, which is exactly what this row's own "reconciled, not
+duplicated" design rule already rules out. Also found, by reading
+`copilot_studio_api.py`'s `UpdateChannelConfigRequest` and its
+`body.model_dump(exclude_none=True)` call into
+`handle_update_channel_config()`: calling that same Tool with only
+`channel_id`/`updated_by` set (every optional field omitted) already
+returns the channel's current config with no write and no audit row --
+`ChannelConfigStore.update_channel_config()`'s own `if not changes:
+return current` short-circuit makes this a real, already-tested,
+zero-code-change "read current config" path through the one Tool that
+exists, so no sixth Tool was needed either.
+
+**Build.** `docs/copilot_studio/agent_instructions.md`: the agent's
+general instructions (persona, hard rules on never fabricating a
+proposal_id/identity, always relaying a tool's own outcome/detail
+rather than assuming success), a description for each of the 5 Tools
+matched to what Copilot Studio's own orchestration uses to pick a
+tool, the identity-binding note for `approver_id`/`updated_by` (map to
+the agent's built-in current-user value in the Tool input-mapping step,
+never left for the model to fill from conversation text), the
+"call Update Channel Config with only channel_id/updated_by to read,
+not write" pattern documented as the intended usage, and a live test
+checklist (real Teams utterances against the real agent, cross-checked
+against `proposals`/`audit` rows in `data/p1_live.db`) -- since no unit
+test can prove which utterance triggers which tool, that only exists as
+portal state.
+
+**Judgment call.** Recommended against building the Dataverse table
+rather than building one anyway to literally match the row's original
+wording, since building it would regress the single-write-path
+guarantee `update_channel_config()` exists to provide (see
+`connector_contract.md`, already-decided). This is a scope correction
+to a design question the row's original text left ambiguous
+("Dataverse-backed... surface"), not a reversal of anything already
+verified live -- the 5 Tools, the live API, and the solution-aware
+connector wiring from 2026-09-18 are all unchanged and still confirmed
+reachable.
+
+**Not done, on purpose.** Pasting `agent_instructions.md`'s text into
+the actual "P1 Channel Intelligence" agent's Instructions field and
+each Tool's description field is Power Platform maker-portal
+configuration -- it has to be done by hand in that portal, the same as
+every other Copilot Studio step in this programme; this repo can
+document exactly what to paste but cannot paste it. Confirming the
+`approver_id`/`updated_by` identity-binding step is also left to the
+maker portal, since the exact system-variable name Copilot Studio
+exposes for "current Teams user" was not something this repo could
+verify without tenant access. The optional Dataverse-backed grid view
+(a visual alternative to the conversational config answer, not
+required for this row's own acceptance test) remains unbuilt, and is
+not planned unless specifically asked for.
+
+## 2026-09-20 -- copilot-api: PYTHONPATH=src added to the Makefile target, since `p1`'s editable install is unreliable for a dotted-module import
+
+**Finding.** Restarting `make copilot-api` tonight (after the earlier
+ngrok tunnel had gone offline) hit `ModuleNotFoundError: No module
+named 'p1'` -- reproduced identically with and without `--reload`,
+ruling out the reload-subprocess theory. This is the same
+`.pth`-processing unreliability already diagnosed for `scripts/*.py`
+entry points (see this file's own earlier entry, "Each script in
+scripts/ inserts src/ onto sys.path..."), just hitting a case that
+workaround cannot cover: every `scripts/*.py` file adds `src/` to
+`sys.path` at the top of its own file, before it imports `p1` -- but
+`uvicorn p1.api.copilot_studio_api:app` has to resolve `p1` as a
+dotted import target before any of that file's own code ever runs, so
+a fix written inside the file (including this same module's own
+`sys.path.insert` line, added for a different reason -- see its
+docstring) cannot rescue this particular invocation shape.
+
+**Build.** `Makefile`'s `copilot-api` target now runs with
+`PYTHONPATH=src` set: `PYTHONPATH=src uv run uvicorn
+p1.api.copilot_studio_api:app --reload --reload-dir src`. Unlike the
+editable install's own `.pth` file (confirmed present and pointing at
+the right absolute path, so this is not a missing-file problem, just
+an unreliable one), `PYTHONPATH` is read directly by the interpreter's
+own `site` initialization independent of `.pth` processing, so it is
+not subject to the same flakiness.
+
+**Not done, on purpose.** The underlying `.pth`-unreliability itself is
+still not root-caused -- same as the earlier entry's own conclusion,
+fixing the symptom at each call site has been more worthwhile than
+chasing why `uv sync`'s editable install intermittently doesn't take
+in this environment. If it recurs somewhere PYTHONPATH can't reach
+(another dotted-module entry point added later), the same one-line fix
+applies there too.
+
+## 2026-09-20 -- CHN-25 live end-to-end test blocked: Copilot Studio environment is out of Credits
+
+**Finding.** With the agent's instructions and tool descriptions in
+place (this file's earlier entry today) and the API + tunnel confirmed
+live (`{"status":"ok","api_key_configured":true}` from the real
+`copilot_studio_api.py` through the current ngrok forwarding URL), the
+first real test message sent to the agent (via Copilot Studio's own
+Preview/test chat, not yet Teams -- see below) failed with:
+`EnforcementUsageCredits` -- "You need credits to continue. Credits
+power building and running your agents and workflows. This
+environment is out of credits." This is a tenant-level Power Platform
+billing/capacity limit, not a code, config, or connector defect --
+nothing in this repo can work around it.
+
+**Also found, separately.** The agent's "Channels" section is still
+empty (no Microsoft Teams channel has been added/published) -- so even
+once credits are restored, a genuine "test it in Teams" pass still
+needs a Channels > Microsoft Teams > Publish step in the maker portal
+first. Today's test was run (and blocked) via Copilot Studio's own
+Preview pane, which talks to the same draft agent and the same 5 live
+tools without requiring that publish step -- the right way to verify
+wiring before spending the extra step of publishing to Teams.
+
+**Not done, on purpose.** Adding credits or checking the reset date is
+an admin/billing action in the Power Platform admin center, outside
+what this repo or its own maker-portal access can do. Publishing the
+agent to a Microsoft Teams channel is also still outstanding, deferred
+until a Preview-pane pass succeeds end to end (no reason to publish an
+agent that cannot yet complete a single turn).
+
+## 2026-09-20 -- copilot_studio_api.py was silently reading the wrong database (data/p1.db, not data/p1_live.db)
+
+**Finding.** Proving the CHN-25 wiring directly against the live API
+(bypassing Copilot Studio's own Credits block -- see this file's
+own entry on that) surfaced a real bug, not a Credits-side effect:
+`POST /list_pending_approvals` returned `{"approvals":[]}` and
+`POST /update_channel_config` for `channel_id=p1-agent-test` 404'd
+with "No configuration found ... in PosixPath('data/p1.db')" -- on a
+channel that genuinely has a synced config and, at the time, genuinely
+had live data. Both were symptoms of the same cause: every
+`handle_*` call in `copilot_studio_api.py` ran with no `db_path`
+argument at all, so each one silently fell back to
+`copilot_studio_connector.py`'s own default parameter,
+`DEFAULT_DB_PATH = "data/p1.db"` -- a fresh, essentially-empty
+database, completely separate from `data/p1_live.db`, the one
+`scripts/live_runner_p1_agent_test.py` actually ingests into,
+`sync_to_db()`s config into, and publishes from. The two database
+files existed side by side in `data/` the whole time; the API was
+just pointed at the wrong one. `.env` already had `P1_DB_PATH=
+data/p1_live.db` set (from earlier in this programme, anticipating
+exactly this), but nothing in `copilot_studio_api.py` ever read that
+variable -- the module's own docstring even says "any DB_PATH a real
+deployer points this at", naming the seam without ever wiring it up.
+
+This means every one of tonight's earlier live-wiring claims for
+CHN-25 (5 Tools attached, instructions pasted, API+tunnel healthy)
+was accurate on its own terms, but the Copilot Studio agent -- once
+Credits allow it to complete a turn at all -- would have been talking
+to an empty, disconnected database indefinitely, silently, with no
+error surfaced anywhere a maker-portal test would have shown it
+(an empty "what's pending" answer looks identical to a correct one).
+
+**Build.** `copilot_studio_api.py`: added `DB_PATH_ENV_VAR =
+"P1_DB_PATH"` and `DB_PATH = Path(os.environ.get(DB_PATH_ENV_VAR,
+str(DEFAULT_DB_PATH)))`, computed once at import time from the
+already-configured `.env` value. `_lifespan()` now calls
+`init_db(DB_PATH)` instead of `init_db()`; all four action endpoints
+now pass `db_path=DB_PATH` into their `handle_*` call instead of
+relying on the handler's own default. `/health` now also reports
+`db_path` in its response, so a future mismatch like this one would
+be visible from the very first reachability check, not just from a
+suspiciously-empty answer three calls later. No test-suite behavior
+changes: `tests/unit/test_copilot_studio_api.py` never sets
+`P1_DB_PATH`, so `DB_PATH` still resolves to the same relative
+`DEFAULT_DB_PATH` those tests already `monkeypatch.chdir()` around --
+verified by inspection of every call site, not just assumed.
+
+**Not done, on purpose.** The live API process already running in the
+user's terminal from earlier tonight is still running the pre-fix
+code (Python doesn't hot-reload an already-imported module-level
+constant, and even `--reload` only re-execs on a file save it watches
+after the fact) -- it needs to be restarted for this fix to take
+effect. Re-running the same three curl commands from this file's
+"live end-to-end test blocked" entry (list_pending_approvals, and a
+peek update_channel_config for p1-agent-test) after that restart is
+what actually proves this fix, not just the code diff.
+
+## 2026-09-20 -- correction: tonight's "Anthropic API" classification/digest/weekly claims were wrong -- the live system has been running on local Ollama the whole time
+
+**Finding.** Investigating why `scripts/test_weekly_today_adhoc.py` failed with
+byte-identical `StructuredOutputError` output on two independent runs led to
+checking `data/logs/llm_calls.jsonl` (every `LLMGateway.generate()` call is
+logged there with `provider`, `model`, `cache_hit`, `degraded`). The full log
+(561 entries, going back to 2026-09-19 13:02 -- before this entire live-testing
+programme started) shows **100% `provider: "ollama"`, `model:
+"qwen2.5:7b-instruct"`, zero `provider: "anthropic"` entries, and `degraded:
+false` on every single one.** `degraded=false` on every row rules out the
+"fallback after an Anthropic failure" theory -- degrade-to-Ollama only fires
+when a direct Anthropic/Bedrock call raises `LLMGatewayError`; here, no
+Anthropic call was ever attempted to fail. Root cause, confirmed directly:
+`.env` (mtime 2026-09-19 17:21, so already in place before tonight's session)
+has `LLM_PROVIDER=ollama` explicitly set, and has **no `ANTHROPIC_API_KEY` at
+all** -- `grep -c "^ANTHROPIC_API_KEY=" .env` returns 0. `LLMGateway.__init__`
+reads `self.provider = provider or os.environ.get("LLM_PROVIDER", "anthropic")`
+-- with `LLM_PROVIDER=ollama` set, this resolves to `"ollama"` on every
+instantiation, unconditionally. My own earlier doc,
+`docs/P1_TEST_VERIFICATION_2026-09-19.md`, already said this in writing
+("`LLM_PROVIDER=ollama` needs your local Ollama") -- I had the evidence
+committed to this repo and repeated the wrong claim anyway tonight.
+
+This means every claim made tonight that "the Anthropic API is genuinely
+working" for CHN-09 classification (question/blocker/decision labels),
+CHN-13 daily digest generation, or CHN-19 weekly narrative generation was
+**wrong**. The rules-first split (deterministic rules, then a model call for
+the remainder) is real and live-tested as described; the model on the other
+end of that remaining call has been the local `qwen2.5:7b-instruct` running
+on the user's own Mac via Ollama, not Claude. This also plausibly explains
+the weekly-narrative `StructuredOutputError`: a small local 7B model failing
+to keep tool-call output flat to a JSON schema (returning
+`{"properties": {"narrative": ...}}` instead of `{"narrative": ...}`) is a
+well-known weak-model tool-use failure mode, not a Claude Sonnet 4 quirk --
+the byte-identical repeat across two runs is consistent with a
+deterministic/near-deterministic local model producing the same malformed
+shape given the same prompt, rather than a fresh Claude sampling failure.
+
+**Not done, on purpose.** Not switching `LLM_PROVIDER` or adding a real
+`ANTHROPIC_API_KEY` without the user's go-ahead -- that changes what model
+tonight's already-recorded classifications and digests would be regenerated
+against, and the user has not said whether they have a key to use for this
+environment. Flagging this here as the authoritative record instead of
+letting the earlier (wrong) claims stand uncorrected in this file.
+
+## 2026-09-20 -- Bedrock smoke test: real 403 from AWS, not a code or config bug -- IAM policy is missing the required second statement for cross-region inference profiles
+
+**Finding.** After setting `LLM_PROVIDER=bedrock` and the new
+`p1-agent-bedrock-demo` AWS keys the user supplied, running the new
+`scripts/test_llm_gateway_smoke.py` in the user's own terminal (real venv,
+`skip_cache=True`, so a genuinely fresh call) produced a real AWS response,
+not a local error:
+
+`Bedrock API error: Error code: 403 - {'Message': 'User:
+arn:aws:iam::619042036275:user/p1-agent-bedrock-demo is not authorized to
+perform: bedrock:InvokeModel on resource:
+arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-20250514-v1:0
+because no identity-based policy allows the bedrock:InvokeModel action'}`
+
+`LLMGateway.generate()`'s existing degrade-to-Ollama path (see the CHN-31/
+CHN-26 decision-log entries) caught this correctly and transparently --
+`degraded: True` was reported, the underlying AWS error text was preserved
+and printed, not swallowed, and the log entry for this call (`data/logs/
+llm_calls.jsonl`) will show `provider: ollama, degraded: true` for exactly
+this call, distinguishable from the 561 pre-existing `degraded: false`
+entries this session already found (see this file's own prior entry on
+that). This is the gateway working as designed, not a new bug.
+
+**Root cause (confirmed against AWS's own documentation, not assumed).**
+`BEDROCK_MODEL_ID` in `.env` is a **cross-region inference profile** ARN
+(`arn:aws:bedrock:us-east-2:619042036275:inference-profile/
+us.anthropic.claude-sonnet-4-20250514-v1:0`, the `us.` prefix marking it as
+one). Per AWS's own "Prerequisites for inference profiles" documentation,
+an IAM policy authorizing a cross-region inference profile needs **two**
+statements: `bedrock:InvokeModel*` on the inference-profile ARN itself
+(present here -- the grant the user's admin issued was scoped to
+`bedrock:InvokeModel`/`InvokeModelWithResponseStream` in `us-east-2` only),
+**and a second statement** granting `bedrock:InvokeModel*` on the
+underlying `foundation-model` ARN(s) in each Region the profile can route
+requests to, scoped back down via a
+`"Condition": {"StringLike": {"bedrock:InferenceProfileArn": "<the profile
+ARN>"}}` clause -- AWS's own documented example for a Claude Sonnet 4
+profile is exactly this shape. `p1-agent-bedrock-demo`'s policy has only
+the first statement, not the second, so any request the profile happens to
+route to a region without an explicit foundation-model grant (this call
+landed in `us-east-1`) is denied even though the caller does hold
+`InvokeModel` on the profile ARN and even though `AWS_REGION=us-east-2`
+matches where the client itself connects. This is a real, external
+AWS-account permissions gap, not anything wrong in this repo's code,
+`.env`, or `BEDROCK_MODEL_ID` value.
+
+**Not done, on purpose.** Widening the `p1-agent-bedrock-demo` IAM policy is
+outside this repo's or this session's control -- it requires whoever issued
+these keys (the same person/team who sent the credential email) to add a
+second statement to that user's policy. `LLM_PROVIDER` is left at
+`bedrock` rather than reverted to `ollama`, since the failure mode is
+already safe (transparent degrade, not a silent wrong answer) and reverting
+would erase the evidence trail this test just produced.
+
+## 2026-09-20 -- fix: Ollama's structured-output prompt was showing the model the JSON Schema wrapper itself, not an example of the answer -- root cause of the weekly narrative StructuredOutputError
+
+**Finding.** `_call_ollama()` (Ollama has no native Anthropic-style tool-calling API -- see its own docstring, CHN-27) hands a weak local model its only shape hint by dumping the raw `tool["input_schema"]` (i.e. `schema.model_json_schema()`) into the prompt behind the words "Respond with ONLY a single JSON object matching this schema exactly." For `WeeklyNarrativeDraft` (one real field: `narrative: str`), that raw schema is `{"properties": {"narrative": {"title": "Narrative", "type": "string"}}, "required": ["narrative"], "title": "WeeklyNarrativeDraft", "type": "object"}`. The two live failures pasted tonight show `qwen2.5:7b-instruct` echoing that wrapper back verbatim with only the leaf value replaced --
+`{"properties": {"narrative": "<the real narrative text>"}}` -- instead of producing a flat instance (`{"narrative": "..."}`). This is a known weak-model tool-use failure mode (pattern-completing the literal structure it was shown, rather than treating it as a schema to instantiate), not a Claude-side issue and not caused by the `_no_digits` validator (which was retried against, not the cause of the shape being wrong in the first place). `ClassificationResult` and `DailySummarySectionDraft` happen not to have hit this tonight, but their raw schemas have the identical `"properties"` wrapper shape -- the same failure was always latent for them too, just not yet triggered.
+
+**Build.** Added `_example_instance(schema, defs=None)` to `src/p1/llm/gateway.py` (module-level, right after `_strip_markdown_json_fence`): walks a JSON Schema dict (`$ref`/`$defs`, `enum`, `anyOf`/`oneOf`, `object`/`properties`, `array`/`items`, and the scalar types) and returns a placeholder **instance** of it -- e.g. `{"narrative": "<value>"}` for `WeeklyNarrativeDraft`, `{"label": "update", "confidence": 0.0}` for `ClassificationResult`, `{"lines": [{"message_id": "<value>", "text": "<value>", "quote": "<value>"}]}` for `DailySummarySectionDraft` -- verified directly against all three of this repo's real schemas before touching the live prompt path. `_call_ollama()`'s prompt now leads with this concrete flat example, followed by an explicit "do NOT nest your answer under a `properties` key, and do NOT include `type`/`title`/`required` keys" instruction, and only then the full schema "for reference." The full schema is kept, not removed -- this adds a disambiguating example in front of it rather than replacing information the model had before.
+
+**Not done, on purpose.** Not yet proven against a live Ollama server -- `python3 -m py_compile` passed and `_example_instance` was unit-checked in isolation against this repo's three real schemas, but the actual fix for the reported failure (does `qwen2.5:7b-instruct` now return a flat `{"narrative": ...}` instead of the `{"properties": {...}}` wrapper) can only be confirmed by re-running `scripts/test_weekly_today_adhoc.py` live, which needs the user's own terminal/venv exactly as the two prior failing runs did. Also not done: touching `ClassificationResult`'s or `DailySummarySectionDraft`'s prompts or call sites -- this fix is entirely inside `_call_ollama()`'s own prompt construction, so every existing caller benefits without any change to `structured.py`, `classifier.py`, `daily_summary.py`, or `weekly_summary.py`.
+
+## 2026-09-20 -- second fix: unwrap a schema-echoed payload once, deterministically, instead of relying on a retry to fix it
+
+**Finding.** The prompt fix above (leading with a flat example instance) was tested live: `scripts/test_weekly_today_adhoc.py` now succeeds, where it failed completely (3/3 attempts, twice) before. But the pasted output shows attempt 1 *still* returned the schema-echoed shape --
+`error=1 validation error for WeeklyNarrativeDraft \n narrative \n Field required [... input_value={'properties': {'narrativ... throughout the week.'}}]` -- and only a later retry produced a flat, valid instance. So the prompt fix reduced the failure rate but did not eliminate the underlying echo behaviour; production correctness was riding on `generate_structured()`'s 3-attempt retry budget catching what attempt 1 still gets wrong, which costs an extra full model round-trip every time and is not a guarantee for a schema/message combination unlucky enough to echo on every attempt.
+
+**Build.** Added `_unwrap_schema_echo(payload, schema)` to `src/p1/llm/structured.py`, called on the parsed payload immediately before `schema.model_validate(payload)`, inside `generate_structured()`'s existing try block. Logic: if any of the schema's own field names already appear as top-level keys, the payload is left untouched (covers every correctly-shaped response, from any provider); otherwise, if `payload["properties"]` exists and is a dict containing the schema's field names, that inner dict is used instead. `"properties"` is never itself a real field name in this codebase's schemas (`narrative`, `label`/`confidence`, `lines`), so the unwrap cannot misfire against a legitimately-named field. Unit-verified in isolation (payload variations: already-flat, schema-echoed, and genuinely-unrelated-garbage) against fake schemas standing in for `WeeklyNarrativeDraft` and `ClassificationResult` -- all five cases behaved as intended, including garbage input still failing validation loudly rather than being silently guessed at. Read the two existing tests that exercise this exact path
+(`tests/unit/test_llm_gateway_ollama_structured.py`,
+`tests/unit/test_structured_output.py`) line by line against both patches
+before committing to them: neither asserts on the literal prompt text this
+change doesn't touch, and every payload shape they already exercise
+contains at least one real field name at the top level or is empty/invalid
+JSON, so `_unwrap_schema_echo` leaves their expected behaviour unchanged --
+not run here, since this sandbox's own Python environment lacks
+pydantic/pytest entirely (separate from the user's real project venv), so
+this is reasoned from the source, not machine-verified.
+
+**Not done, on purpose.** Have not re-run `scripts/test_weekly_today_adhoc.py`
+against this second fix yet -- that needs the user's real terminal/venv, same
+as every other live check tonight. Have not run the real `pytest` suite
+either, for the same environment reason -- asking the user to run
+`uv run pytest tests/unit/test_llm_gateway_ollama_structured.py
+tests/unit/test_structured_output.py -v` themselves is the next step, not
+a rubber-stamped "should be fine."
+
+## 2026-09-20 -- confirmed live: CHN-19 weekly narrative now succeeds cleanly, no retry needed
+
+**Finding.** User ran both checks in their real venv:
+`uv run pytest tests/unit/test_llm_gateway_ollama_structured.py
+tests/unit/test_structured_output.py -v` -- all 6 existing tests still pass,
+confirming neither of tonight's two fixes (the Ollama example-instance prompt
+in `gateway.py`, the `_unwrap_schema_echo` repair in `structured.py`) broke
+anything already relied on. Then `scripts/test_weekly_today_adhoc.py` --
+this run produced a real, valid `WeeklyNarrativeDraft` with **no
+`structured_output_retry` warning line at all**, unlike both prior failing
+runs and even unlike the immediately-preceding run (which needed a retry
+after attempt 1 echoed the schema). This is the strongest evidence yet:
+either the improved prompt got it right on the very first attempt this
+time, or `_unwrap_schema_echo` silently repaired an attempt-1 echo before
+validation ever saw it -- either way, one clean model call produced a
+valid, grounded, digit-free narrative sentence for a real live week
+("The team made progress with a significant increase in rate, achieved one
+decision, and faced a single unanswered question throughout the week."),
+persisted through the same `generate_and_persist_weekly_rollup()` path the
+real weekly scheduler would use (once one exists -- see the still-open
+"no weekly-publish scheduling job exists" gap from earlier tonight).
+
+CHN-19 is now live-tested with genuine evidence, matching CHN-09 and
+CHN-13's status from earlier tonight -- not just code-reviewed.
+
+**Not done, on purpose.** One clean run is evidence, not a guarantee -- the
+underlying model can still echo the schema shape on some future call
+(the fix makes that survivable via the deterministic unwrap, not
+impossible). Nothing further changed; this is a confirmation entry, not a
+new build.
+
+## 2026-09-20 -- P1 C1/P2 P6/P3 O4 ("Roster, window, thresholds and exceptions -- Python config schema + Dataverse surface"): the live-edit half of this row was never actually wired into the running system
+
+**Finding.** Traced every real caller of `ChannelConfigStore.get_effective_config()` -- the CHN-25 live-read path this row's own reasoning ("the channel owner ... needs to maintain it without a deploy") was built for -- across the whole codebase. There are exactly two: `src/p1/approval/service.py` (only to look up `channel_owner_id` when resending an approved escalation) and `app/approval_dashboard.py` (the Streamlit page's own display). **Nothing in the real ingest/classify/digest/nudge/escalation pipeline ever calls it.** `scripts/live_runner_p1_agent_test.py`'s `main()` loads config exactly once at startup with `get_channel_config()` (the plain committed-YAML read, not the DB-backed live one), holds that single object, and passes it by reference into every scheduled job (`_poll_ingest`, `_run_nudges_and_escalations`, `build_scheduler`'s per-channel cron jobs) for the rest of the process's life -- confirmed by reading each of those functions, none of which re-fetch config.
+
+Proved live tonight: used `scripts/test_live_config_update_adhoc.py` (calling the exact same `update_channel_config()` Copilot Studio's tool and Streamlit call) to write `update_window_end` from `17:30:00` to `12:00:00` in the live DB (version 1 -> 2), confirmed the write and the version bump, then reverted (version 2 -> 3) -- both writes succeeded cleanly, so the write/validate/audit side of this feature works exactly as built. The revert happened before an ingest poll tick fired in between (5-minute interval), so the specific live-witnessed "the running process's classify counts didn't move" observation was not captured this session -- the finding rests on exhaustive call-site tracing (every `get_effective_config()` call site read, every scheduled-job function read), not on watching a tick happen mid-divergence. Flagging this distinction explicitly rather than overstating it as fully live-witnessed.
+
+Three compounding gaps, not one:
+1. The running process never re-reads live config at all (above).
+2. Even a restart doesn't help: `main()` calls `sync_to_db()` unconditionally on every startup, which resyncs the DB from committed YAML -- so a live edit sitting in the DB gets silently overwritten back to the YAML value on the next deploy/restart, rather than surviving it. (This part is actually documented as intentional in `loader.py`'s own module docstring -- "a live edit is a running override, not a fork of the source of truth" -- but combined with gap 1, it means a live edit currently has NO path to ever taking effect on the real system: not while running, not after a restart.)
+3. `update_channel_config()` only accepts three fields -- roster, update_window_start/end, exceptions. "Thresholds" (`length_floor`, `count_thread_replies`), named explicitly in this spec row's own first column, was never exposed as a live-editable field at all -- it is YAML-only/deploy-only by design, per the same docstring, so even fixing gaps 1-2 would not cover thresholds without further work.
+
+The row's second column, "Dataverse surface", is separately already known-blocked by a real Power Apps permissions wall (this file's earlier entry today) -- so neither half of "Python config schema + Dataverse surface" currently delivers the row's own stated reason for existing (a channel owner maintaining roster/window/thresholds/exceptions without a deploy).
+
+**Not done, on purpose.** Not wiring `_poll_ingest`/`_run_nudges_and_escalations`/`build_scheduler`'s jobs to call `get_effective_config()` per tick instead of using the frozen startup snapshot -- that is a real, buildable fix (unlike the Dataverse permissions wall) but is a design/behavior change to the live pipeline the user has not yet asked for and hasn't reviewed the tradeoff on (e.g. re-fetching config every 5-minute tick vs. caching with a TTL, and what "the channel owner changed the window mid-tick" should mean for a message ingested in that same tick).
+
+## 2026-09-20 -- fix: live_runner's ingest and nudge/escalation ticks now fetch config fresh from the live DB, closing the "channel owner can't actually reach the running system" gap
+
+**Finding this fixes.** This file's own earlier entry today ("the live-edit half of this row was never actually wired into the running system") traced every real caller of `get_effective_config()` and found none of them in the live pipeline -- `_poll_ingest()` and `_run_nudges_and_escalations()` both received `config` as a frozen argument, captured once in `main()` at process startup, never refreshed.
+
+**Build.** `scripts/live_runner_p1_agent_test.py`:
+- `_poll_ingest()`: dropped the `config` parameter; now calls
+  `ChannelConfigStore().get_effective_config(CHANNEL_ID, db_path=db_path)`
+  at the top of its existing try block, every tick (every
+  `INGEST_POLL_MINUTES`, default 5) -- so a channel owner's roster,
+  window, or exceptions edit (via Copilot Studio's tool or the
+  Streamlit dashboard, both calling `update_channel_config()`) is
+  live within one poll interval, not never.
+- `_run_nudges_and_escalations()`: same treatment -- fetches config
+  once per tick, before nudge and escalation both run (they must use
+  the same config instance for one tick, not two independently-fetched
+  ones). A config-fetch failure now logs once and skips both nudge and
+  escalation for that tick, rather than raising or running one against
+  a value it never received.
+- `main()`: removed `"config": config` from both jobs' `kwargs` in
+  `scheduler.add_job(...)`, since neither function accepts it anymore.
+
+**Deliberately unchanged / out of scope**, per the tradeoff already
+discussed with the user before writing this: `working_days` and
+`daily_digest_time` still come from the frozen startup config, because
+they set the APScheduler `CronTrigger`'s own fire time at job
+registration -- changing them live would require rescheduling the job
+itself, not just refreshing a value read inside it, and neither field
+is even live-editable via `update_channel_config()` today (roster,
+window, exceptions only -- see this file's own earlier "thresholds
+were never exposed as live-editable" note). The race this introduces
+(a config edit landing mid-tick is now visible to that same tick,
+where before every tick was internally consistent against one frozen
+snapshot) was flagged to the user beforehand as a real, low-stakes
+behavior change, not discovered after the fact.
+
+**Not done, on purpose.** `python3 -m py_compile` passed and every
+altered call site was re-read after patching to confirm no leftover
+reference to the removed `config` kwarg remains, but this has NOT yet
+been proven live -- no unit test exists for this script (it requires
+real Graph auth, consistent with every other live-runner-shaped script
+in this repo), so the only real proof is restarting the running
+process and re-running tonight's earlier live-config-write test
+(`scripts/test_live_config_update_adhoc.py`) against it, this time
+actually waiting out a poll tick before reverting. That restart and
+re-test have not happened yet -- next step, not yet done.
+
+## 2026-09-20 -- second channel configured for the SPN-04 multi-channel isolation test
+
+**Build.** Added `config/channels/teams-agent-test.yaml`: a second real
+Teams channel (`19:ID3C8qqqxb40IRhNJ3xvts2BWAgRac3SxYwm9XyBEGM1@thread.tacv2`,
+display name "Teams-agent-test", same team/tenant as `p1-agent-test`),
+deliberately configured with a different window (`09:00-13:00` vs.
+`08:00-17:30`) and a different timezone (`America/New_York` vs.
+`Asia/Colombo`) than the first channel, per the SPN-04 acceptance criteria
+this row's own wording names ("Two channels configured with different
+rosters, windows and timezones"). Roster deliberately reuses Sharon
+Silva's AAD id (`a52e61e5-...`) -- confirmed with the user this is fine
+for an isolation test, since the point is whether editing one channel's
+config leaves the other alone, not that the person differs.
+`nudge_enabled` left at its real default (`false`), unlike
+`p1-agent-test`'s still-active TEMPORARY override.
+
+Added `scripts/live_runner_teams_agent_test.py`: a copy of
+`live_runner_p1_agent_test.py` with `CHANNEL_ID` swapped to the new
+channel and every `_log()` line tagged `[Teams-agent-test]` so two
+terminals running side by side are unambiguous at a glance -- no other
+behavior change from the original, which is left untouched (already
+proven live tonight, including today's frozen-config fix).
+
+Both scripts point at the same `LIVE_DB_PATH = "data/p1_live.db"` --
+channels are rows in one shared database, not separate files, which is
+by design (`ChannelConfigStore.sync_to_db()` upserts every configured
+channel's YAML into that one DB on every startup, regardless of which
+channel a given runner process actively polls). `ScopedTeamsReader`
+still scopes each process to ingesting only its own `CHANNEL_ID`, so
+the two processes cannot cross-ingest each other's messages even though
+they share a database file.
+
+**Not done, on purpose.** SQLite concurrency: `get_connection()`
+(`src/p1/storage/db.py`) calls `sqlite3.connect(db_path)` with no
+explicit `timeout=`, so it gets Python's own 5-second default busy
+timeout, no WAL mode. Two independent processes writing to the same
+file should be fine for this test's write volume (one short write per
+5-minute tick each), but a `sqlite3.OperationalError: database is
+locked` under sustained overlap is a real, if unlikely, possibility
+worth knowing about -- not fixed here, since it wasn't asked for and
+isn't yet a proven problem.
+
+Not yet run: this is config + a second runner script only. The actual
+isolation test (edit one channel's roster/window live, confirm the
+other channel's classify counts do not move) has not happened yet --
+next step, once the user starts `live_runner_teams_agent_test.py` in a
+new terminal alongside the already-running `live_runner_p1_agent_test.py`
+(after that one's already-planned restart to pick up today's config-
+freshness fix).
+
+## 2026-09-20 -- fix: Graph's own nextLink can be rejected on an empty/new channel (DeltaLinkRejectedError); plus three unrelated full-suite regressions found and fixed along the way
+
+**Finding.** `scripts/live_runner_teams_agent_test.py`'s very first ingest
+tick against the brand-new Teams-agent-test channel failed with
+`HTTPStatusError: Client error '400 Bad Request'` on an absolute Graph
+delta URL containing `$skiptoken`. A one-off diagnostic
+(`scripts/diagnose_second_channel_delta_400.py`, real Graph calls,
+read-only) reproduced it directly: page 1 (relative URL) returns 200
+with `"value": []` and an `@odata.nextLink`; following that exact
+nextLink for page 2 returns 400 `{"error": {"code": "BadRequest",
+"message": "Parameter 'DeltaToken' not supported for this request."}}`.
+Confirmed via web search this is a known, open Microsoft Graph bug
+(Microsoft Q&A #1184831; tracked upstream in
+microsoftgraph/microsoft-graph-docs#7382), reproducible on an
+empty/newly-created channel -- not a bug in this codebase's pagination
+code, and not fixed by clearing the token and resyncing from scratch
+(retracing the code showed that would reproduce the identical
+rejection immediately, within the same sync attempt).
+
+**Build.**
+- `src/p1/adapters/teams_reader.py`: added `DeltaLinkRejectedError`,
+  documented as distinct from `DeltaTokenExpiredError` (a
+  previously-valid token going stale over time, HTTP 410, fixed by a
+  full resync) -- this is the backend handing back a broken
+  continuation link within the same sync attempt, where resyncing
+  doesn't help.
+- `src/p1/adapters/teams_reader_graph.py`: `list_messages()` now
+  raises `DeltaLinkRejectedError` when a 400 response's body contains
+  both "DeltaToken" and "not supported" -- narrowly matched on the
+  actual Graph error text (not "any 400 while following a token") so
+  an unrelated real 400 still surfaces normally via `raise_for_status()`.
+- `src/p1/ingestion/sync.py`: `_drain_pages()` now catches it, stops
+  paging for that sync attempt, and persists the last delta position
+  that actually worked (`last_good_token`, possibly `None`) instead of
+  the rejected link -- so the next tick starts clean from the plain
+  relative URL rather than retrying a dead link forever.
+- Test coverage: two new cases in `tests/unit/test_teams_reader_graph.py`
+  (the exact Graph error triggers `DeltaLinkRejectedError`; an
+  unrelated 400 still raises `HTTPStatusError` normally) and one in
+  `tests/unit/test_ingestion_sync.py` reproducing the exact repro shape
+  end-to-end (empty page + nextLink, then rejection) asserting the sync
+  doesn't blow up and doesn't persist the broken link.
+
+**Not done, on purpose.** No general fix exists for Graph's own bug --
+this only makes the client side of it safe (stop, don't loop, don't
+persist garbage). The moment a real message lands in a previously-empty
+channel, whether page 1 then returns a working `deltaLink` or the same
+broken-nextLink shape is still Graph's to decide, not something this
+fix controls; if it recurs against a channel with real messages later,
+that's new evidence, not a sign this fix is wrong.
+
+---
+
+**Along the way**: running the first full (`uv run pytest -q`) suite of
+the night turned up 8 failures, none caused by the fix above (confirmed
+via `git diff --stat` on exactly the 5 files that change touched) --
+three separate, real, pre-existing issues, all fixed on request:
+
+1. **`tests/unit/test_run_daily_full_flow.py` (2 failures)** -- caused
+   by tonight's own second-channel work: `run_daily.run_full_flow()`
+   enumerates the real `config/channels/*.yaml` directory unmocked, and
+   these tests asserted an exact 3-channel set. Added a
+   `TEAMS_AGENT_TEST` constant and folded it into both assertions and
+   the outbound-log line counts (3->4, 6->8).
+
+2. **`tests/unit/test_copilot_studio_api.py` (4 failures)** --
+   pre-existing, from an earlier fix today to `copilot_studio_api.py`
+   (making it read `P1_DB_PATH` from `.env` instead of an empty
+   default). That value was a module-level constant computed once at
+   import time; `.env`'s real `P1_DB_PATH=data/p1_live.db` gets loaded
+   into the whole pytest process via `load_dotenv()` and never unset,
+   so every test silently pointed the API at a different file than the
+   one each test's own `_seed()` populated (which assumes
+   `DEFAULT_DB_PATH`) -- hence the empty approvals list and the 404s.
+   Fixed by replacing the frozen `DB_PATH` constant with a `_db_path()`
+   function read fresh at every request/startup, and having the test's
+   `_client()` helper `monkeypatch.delenv(P1_DB_PATH)` per test to
+   restore `_seed()`'s own stated isolation design. Confirmed this was
+   never a real-data-safety issue -- each test's `monkeypatch.chdir`
+   keeps both the wrong and right paths scoped inside that test's own
+   tmp directory, never the real repo's `data/p1_live.db`. Also updated
+   `test_health_needs_no_api_key_and_reports_whether_one_is_configured`
+   for the new `db_path` field in the health response.
+
+3. **`tests/unit/test_no_inline_prompts.py` (1 failure)** --
+   pre-existing, from tonight's earlier Ollama schema-echo fix. This
+   repo's own SPN-05 lint rule forbids hand-written prompt-shaped
+   string literals outside `prompts/`. Moved the two flagged literals
+   into versioned prompt files, loaded via `PromptRegistry`:
+   `prompts/ollama_schema_instructions/v1.md` (the wrapper instruction
+   text `LLMGateway._call_ollama()` builds for any structured-output
+   request against Ollama -- not tied to one capability, documented as
+   such in `prompts/README.md`) and
+   `prompts/ops_llm_gateway_smoke_test/v1.md` (the ad-hoc
+   `scripts/test_llm_gateway_smoke.py` diagnostic's prompt/system text,
+   combined into one prompt since the split made no difference to what
+   that script actually checks).
+
+Full suite after all four fixes: `469 passed, 2 skipped, 0 failed`
+(same 2 pre-existing skips as before any of tonight's work).
+
+## 2026-09-20 -- SPN-04 acceptance test, fully live-verified: "Two channels configured with different rosters, windows and timezones; changing one roster changes the non-responder set with no code change"
+
+**What this closes.** Two real, currently-running channels
+(p1-agent-test, Teams-agent-test) with genuinely different rosters*,
+windows (08:00-17:30 Asia/Colombo vs. 09:00-13:00 America/New_York) and
+timezones, both live and polling on their own schedule. This entry
+records the two live tests that together prove the row's full claim.
+
+(*at the time of these tests both channels' roster happened to be the
+single reused id `a52e61e5-...`, a deliberate choice for the earlier
+isolation test -- see this file's 2026-09-20 "second channel configured"
+entry. Neither test below depends on the rosters actually differing;
+both prove editing one channel's roster never reaches the other,
+regardless of whether the two happen to overlap.)
+
+**Test 1 -- config/window isolation** (`scripts/test_spn04_isolation.py`):
+live-edited only Teams-agent-test's update window (09:00-13:00 ->
+10:00-11:00 -> reverted) via the real `update_channel_config()` write
+path, snapshotted both channels' effective config and full
+message/classification state before the edit, waited for a real
+scheduled poll tick on both already-running `live_runner_*.py`
+processes (no restart), then re-snapshotted. Verdict: p1-agent-test's
+config and all 18 messages' classifications were byte-for-byte
+identical across the edit and the tick; Teams-agent-test's config
+version genuinely bumped, proving the edit really took effect rather
+than silently no-opping.
+
+**Test 2 -- roster changes the non-responder set**
+(`scripts/test_spn04_roster_changes_non_responders.py`): calls
+`p1.participation.ledger.build_ledger()` directly -- the exact, pure
+function both `run_nudge_job()` and `run_escalation_job()` use in
+production to compute non-responders, pure read-only set arithmetic,
+no nudge/escalation actually run, no real Teams message ever sent.
+Added one clearly-synthetic, never-a-real-person member id to
+p1-agent-test's live roster via `update_channel_config()`, recomputed
+the ledger for 2026-09-20, and reverted. Verdict, all three true: the
+synthetic member appeared as a brand-new `no_message` non-responder
+immediately; the real existing roster member's own state was
+unaffected; Teams-agent-test's config was completely untouched
+throughout (checked via a full `model_dump()` equality, not just the
+roster field).
+
+**Together**, these two tests cover the row's full acceptance wording:
+different rosters/windows/timezones can coexist on two real channels,
+a live edit to either field reaches the running system within one poll
+interval with zero deploy (closing this file's own earlier "the
+live-edit half of this row was never actually wired into the running
+system" finding), and a change to one channel's roster or window never
+touches the other channel's own non-responder set or config.
+
+**Not done, on purpose.** Both tests used a single scenario (one
+synthetic addition, one window change) rather than exhaustively testing
+every field `update_channel_config()` can touch (exceptions is the one
+CHN-25 field not exercised by either test here) -- exceptions already
+has its own direct unit test coverage elsewhere in this repo, and nothing
+about the frozen-config fix or the isolation mechanism treats exceptions
+differently from roster, so this wasn't considered separately
+load-bearing enough to justify a third live test tonight.
+
+## 2026-09-20 -- Dataverse-as-config-surface (CHN-25/SPN-04): confirmed real Power Platform permissions blocker, Option A put on hold
+
+**Context.** After SPN-04's roster/window claim was proven live by two
+tests (see this file's entry immediately above), the question came up of
+whether Dataverse actually plays any role in that claim as literally
+written in the spec ("Dataverse lets a channel owner maintain their own
+roster in Teams without a deploy"). It doesn't yet -- `ChannelConfigStore`
+reads/writes SQLite only, and the earlier CHN-25 decision to treat a
+Dataverse table as "unnecessary" was a unilateral call that didn't follow
+the literal spec wording. Re-opened it and chose the more invasive of two
+designs: Option A, where Dataverse's Web API becomes the live source of
+truth `ChannelConfigStore` reads/writes on every poll tick (as opposed to
+Option B, a synced mirror behind SQLite).
+
+**What was tested, live, before writing any code.** Rather than build an
+integration against an architecture that might be blocked, tested whether
+this account can even create a Dataverse table in this environment.
+Navigated to the real "P1 Channel Intelligence" solution in the Power Apps
+maker portal (`make.powerapps.com`, environment `DigitalT3 Software
+Services`, solution id `de03e8c9-6eb3-f111-b374-000d3af06e75`) and opened
+its `+ New` menu.
+
+**Result: Table is greyed out.** Every other option in that menu --
+Agent, App, Automation, Dashboard, Report, Security -- is clickable.
+Table alone is disabled. This is on top of the page-level banner already
+seen twice before ("One or more commands are unavailable due to your
+current privileges for this environment"). Together these confirm what
+was previously only suspected: this account lacks the Dataverse
+customization privilege (something like System Customizer or System
+Administrator) needed to create a table in this environment at all --
+this is a real, external, admin-side permissions wall, not a code
+problem, and not something workable around from the client side.
+
+**Decision: hold Option A, request admin access.** No `ChannelConfigStore`
+migration code will be written against Dataverse until this is resolved --
+building a Web API integration against a table that can't yet exist would
+be pure waste, and doing so under a differently-privileged account later
+would mean redoing the design work anyway. The concrete ask for whoever
+administers this Power Platform tenant: grant the signed-in account
+(shown in the portal as "SS") the System Customizer role (or equivalent)
+scoped to the `DigitalT3 Software Services` environment, specifically so
+it can create a new Dataverse table inside the existing "P1 Channel
+Intelligence" solution. Once granted, the next step is designing the
+actual table schema (open question: how to represent `roster`, currently
+a flat list, in Dataverse's relational model -- a related child table,
+most likely, rather than a single-column list) before touching any
+`ChannelConfigStore` code, and re-running `test_spn04_isolation.py` /
+`test_spn04_roster_changes_non_responders.py` against the Dataverse-backed
+implementation without disrupting the two currently-running live channels.
+
+**Not blocked by this.** SPN-04's own acceptance wording (two channels,
+different rosters/windows/timezones, changing one roster changes only
+that channel's non-responder set with no code change) is already fully
+proven against the current SQLite-backed `ChannelConfigStore` -- see the
+entry directly above. This blocker is specific to the separate,
+higher-bar claim that a channel owner can maintain their roster from
+inside Teams/Dataverse without any deploy; that claim stays open until
+the admin-access ask above is resolved.
+
+## 2026-09-20 -- CHN-02's "Dataverse surface" wording re-read carefully; switched from Option A back to Option B
+
+**What triggered this.** Re-examined CHN-02's exact spec text, which was
+being paraphrased loosely until now: implementation column reads "Python
+(YAML schema) + Dataverse surface" -- a compound, additive pairing, not
+two alternatives. "Python (YAML schema)" names the config's schema,
+validation and versioning layer -- exactly what's already built
+(`ChannelConfig` Pydantic model, versioned, persisted via YAML + mirrored
+into SQLite through `ChannelConfigStore`). "Dataverse surface" is the
+added piece, and "surface" is Microsoft's own Power Platform term for an
+interaction/UI layer (a "Teams surface", an "Outlook surface"), not a
+storage-engine or backend-of-record term. The row's own rationale --
+"Dataverse lets a channel owner maintain their own roster in Teams
+without a deploy" -- is a claim about who edits what, from where, not a
+claim that the live poll loop must read Dataverse's Web API on every
+tick.
+
+**Decision.** Reading it literally, this row asks for Option B, not
+Option A: the Python/YAML-schema config engine stays authoritative for
+the running system (already built, already proven live via
+`test_spn04_isolation.py` and
+`test_spn04_roster_changes_non_responders.py`); Dataverse's job is
+specifically to be the editable surface a channel owner opens inside
+Teams. Something still needs to carry an edit made on that surface into
+the operational store, but introducing a live network dependency into
+every 5-minute poll tick (what Option A would have required) goes further
+than the spec text actually asks for. Reversing yesterday's Option A
+choice; Option B is now the design target once Dataverse table creation
+is unblocked.
+
+**Still blocked, unchanged.** This doesn't touch the permissions wall
+from the entry above -- table creation for this account in this
+environment is still disabled (confirmed live: "Table" greyed out in the
+P1 Channel Intelligence solution's `+ New` menu). The admin-access ask
+stands as written: grant the signed-in account ("SS") System Customizer
+(or equivalent) on the `DigitalT3 Software Services` environment. No
+Dataverse code -- for either option -- gets written until that's granted.
+Once it is, the concrete shape of Option B to design: a Dataverse table
+mirroring the same config fields (roster, window, timezone, etc.), a
+sync direction from that table into `ChannelConfigStore`'s SQLite/YAML
+store (poll-interval or event-driven, still to be decided), and the same
+live isolation/roster tests re-run against the new write path without
+disrupting the two channels already running.

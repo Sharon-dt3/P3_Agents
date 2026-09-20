@@ -139,16 +139,25 @@ def run_daily_digest_job(
     publish_key = f"{channel_id}:{date_str}:daily_publish"
     proposal = proposal_store.get_by_idempotency_key(publish_key)
 
+    # Computed on every call, whether or not a proposal already exists --
+    # regenerating today's digest content is safe any number of times
+    # (this function's own module docstring), and as of the fix below
+    # that is no longer true only of the digests table's own row: a
+    # still-pending proposal's payload is refreshed to match too, so
+    # what a human eventually approves -- and what guarded_send() below
+    # actually posts -- is never a stale snapshot from the moment this
+    # proposal was first created.
+    source_refs = sorted(
+        {line.message_id for lines in digest_result.section_lines.values() for line in lines}
+    )
+    publish_payload = {
+        "channel_id": channel_id,
+        "date": date_str,
+        "target_channel": channel_id,  # no summary-channel config field -- see module docstring
+        "content": digest_result.content,
+    }
+
     if proposal is None:
-        source_refs = sorted(
-            {line.message_id for lines in digest_result.section_lines.values() for line in lines}
-        )
-        publish_payload = {
-            "channel_id": channel_id,
-            "date": date_str,
-            "target_channel": channel_id,  # no summary-channel config field -- see module docstring
-            "content": digest_result.content,
-        }
         # has_ever_published() is asked ONLY here, at the moment a
         # channel's publish proposal for this day is first created --
         # never again on a later rerun for the same day, since the
@@ -169,6 +178,19 @@ def run_daily_digest_job(
         # refusal to write_log) exactly like any other pending proposal
         # would, rather than this function special-casing "brand new"
         # as a case that never even attempts a send.
+    elif proposal.status == PENDING:
+        # Still awaiting a human decision -- discovered 2026-09-19: a
+        # rerun here used to leave this proposal's payload frozen at
+        # whatever existed the moment it was first created, even though
+        # digest_result.content just above was freshly regenerated from
+        # this call's own messages. refresh_payload() is a no-op-safe
+        # replacement restricted to pending proposals only (see its own
+        # docstring) -- once approved, rejected, or applied, this branch
+        # is never reached again (the elif above only matches PENDING),
+        # so a decided proposal's payload is never touched here.
+        proposal = proposal_store.refresh_payload(
+            proposal.id, payload=publish_payload, source_refs=source_refs,
+        )
 
     def send_fn():
         fresh = proposal_store.get(proposal.id)

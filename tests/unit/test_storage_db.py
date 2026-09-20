@@ -36,5 +36,6 @@ def test_run_migrations_is_idempotent(tmp_path):
         "0003_channel_config_non_working_dates.sql",
         "0004_nudges.sql",
         "0005_escalations.sql",
+        "0006_messages_fts_sync.sql",
     ]
     assert second_run == []

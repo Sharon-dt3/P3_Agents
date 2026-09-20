@@ -68,3 +68,18 @@ def test_unrecognized_provider_has_no_fallback(tmp_path):
 
     with pytest.raises(LLMGatewayError):
         gateway.generate("hello", skip_cache=True)
+
+
+def test_degrading_logs_the_primary_providers_real_failure_reason(tmp_path, caplog):
+    # CHN-26: generate() used to catch `except LLMGatewayError:` with no
+    # bound name, discarding the actual reason the primary provider
+    # failed. A real run against real Bedrock hit exactly this: the
+    # warning said only "Primary provider exhausted; degrading to local
+    # Ollama fallback", with no way to tell why Bedrock itself had been
+    # rejected -- only Ollama's own, unrelated failure was ever visible.
+    gateway = _make_gateway(tmp_path, "bedrock", fail_providers={"bedrock"})
+
+    with caplog.at_level("WARNING"):
+        gateway.generate("hello", skip_cache=True)
+
+    assert "bedrock exhausted (simulated)" in caplog.text

@@ -1,0 +1,29 @@
+channel_id: "19:ID3C8qqqxb40IRhNJ3xvts2BWAgRac3SxYwm9XyBEGM1@thread.tacv2"
+display_name: "Teams-agent-test"
+allowlisted: true
+
+roster:
+  - "a52e61e5-16c6-4f6c-af67-f41f85e7a00a"  # Sharon Silva (SharonS@digitalt3.com) -- reused deliberately for the second-channel isolation test, see chat 2026-09-20
+
+update_window_start: "09:00:00"
+update_window_end: "13:00:00"
+timezone: "America/New_York"
+working_days: ["Mon", "Tue", "Wed", "Thu", "Fri"]
+non_working_dates: []
+
+length_floor: 10
+count_thread_replies: true
+ignore_bots: true
+
+daily_digest_time: "13:00:00"
+weekly_digest_day: "Fri"
+weekly_digest_time: "11:00:00"
+
+nudge_enabled: false
+nudge_cap_per_day: 1
+escalation_threshold_days: 3
+channel_owner_id: "SharonS@digitalt3.com"
+
+exceptions: []
+
+version: 1

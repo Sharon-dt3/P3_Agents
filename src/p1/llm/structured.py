@@ -23,6 +23,34 @@ class StructuredOutputError(RuntimeError):
     allowed attempts. The caller must handle this -- there is no default."""
 
 
+def _unwrap_schema_echo(payload, schema: type[ModelT]):
+    """Weak/local models (see gateway._call_ollama's own docstring --
+    Ollama has no native tool-calling API, so the raw JSON Schema is
+    the only shape hint they get) can echo that schema's own
+    "properties" wrapper back with real values spliced into the
+    leaves, instead of returning a flat instance -- e.g.
+    {"properties": {"narrative": "..."}} instead of
+    {"narrative": "..."}. Live-observed tonight on WeeklyNarrativeDraft
+    even after gateway.py's prompt was improved to show a concrete
+    example instance: the fix reduced it from every attempt failing to
+    a later retry succeeding, but did not stop attempt 1 from still
+    doing this sometimes. Repairing it here, once, with certainty, is
+    strictly better than spending a whole retry attempt (a fresh model
+    call) on a shape this codebase can already recognize and fix for
+    free. "properties" is never itself one of this codebase's real
+    schema field names, so the unwrap below is unambiguous -- a
+    correctly-shaped payload is always returned untouched."""
+    if not isinstance(payload, dict):
+        return payload
+    field_names = set(schema.model_fields.keys())
+    if field_names & payload.keys():
+        return payload  # already flat (or partially flat) -- leave it alone
+    inner = payload.get("properties")
+    if isinstance(inner, dict) and (field_names & inner.keys()):
+        return inner
+    return payload
+
+
 def generate_structured(
     gateway,
     prompt: str,
@@ -55,6 +83,7 @@ def generate_structured(
         )
         try:
             payload = json.loads(response.text)
+            payload = _unwrap_schema_echo(payload, schema)
             instance = schema.model_validate(payload)
         except (json.JSONDecodeError, ValidationError) as exc:
             last_error = exc

@@ -27,6 +27,24 @@ class ParticipationStore:
         conn = get_connection(self._db_path)
         try:
             for record in records:
+                # participation.member_id is a foreign key into members(id)
+                # (same PRAGMA foreign_keys = ON schema MessageStore's own
+                # author_id FK lives under). A roster member who has NEVER
+                # posted a single message -- the exact, ordinary case this
+                # table exists to record as "no_message" -- has no row in
+                # members yet, since the only other thing that inserts one
+                # (MessageStore._ensure_member_exists) only ever fires per
+                # message, never for a roster id that produced zero of
+                # them. Without this, recording the single most common
+                # non-responder state would crash on the FK, every time.
+                # Same established, already-proven pattern as that sibling
+                # method: INSERT OR IGNORE with the id standing in as its
+                # own placeholder display_name, never overwriting a real
+                # display name a richer sync already filled in.
+                conn.execute(
+                    "INSERT OR IGNORE INTO members (id, display_name) VALUES (?, ?)",
+                    (record.member_id, record.member_id),
+                )
                 conn.execute(
                     """
                     INSERT INTO participation

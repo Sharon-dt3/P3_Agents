@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from p1.adapters.teams_reader import DeltaTokenExpiredError
+from p1.adapters.teams_reader import DeltaLinkRejectedError, DeltaTokenExpiredError
 from p1.adapters.teams_reader_graph import GraphTeamsReader, GraphThrottledError
 
 
@@ -80,6 +80,41 @@ def test_list_messages_raises_on_expired_delta_token():
     reader = _reader_with_transport(handler)
     with pytest.raises(DeltaTokenExpiredError):
         reader.list_messages("c1", delta_token="https://x/delta?token=expired")
+
+
+def test_list_messages_raises_delta_link_rejected_on_known_graph_bug():
+    # Reproduces 2026-09-20's real Teams-agent-test failure verbatim:
+    # Graph accepts the nextLink it just handed back as a *request*
+    # (200 would follow the value/nextLink shape below), but here it
+    # comes back 400 with this exact error text -- a known, open Graph
+    # bug (see DeltaLinkRejectedError's docstring), not a malformed
+    # request on our side.
+    def handler(request):
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "BadRequest",
+                    "message": "Parameter 'DeltaToken' not supported for this request.",
+                }
+            },
+        )
+
+    reader = _reader_with_transport(handler)
+    with pytest.raises(DeltaLinkRejectedError):
+        reader.list_messages("c1", delta_token="https://x/delta?$skiptoken=abc")
+
+
+def test_list_messages_unrelated_400_still_raises_http_status_error():
+    # A real, unrelated 400 (not this specific Graph bug's error text)
+    # must still surface normally -- this fix is narrowly matched on the
+    # actual error text, not "any 400 while following a token".
+    def handler(request):
+        return httpx.Response(400, json={"error": {"code": "BadRequest", "message": "Something else entirely."}})
+
+    reader = _reader_with_transport(handler)
+    with pytest.raises(httpx.HTTPStatusError):
+        reader.list_messages("c1", delta_token="https://x/delta?$skiptoken=abc")
 
 
 def test_parse_message_flags_system_message():

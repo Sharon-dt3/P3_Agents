@@ -4,12 +4,26 @@ read a non-allowlisted channel or any chat, rather than merely unlikely.
 
 Wraps a TeamsReader and refuses list_messages()/list_channel_members()
 for any channel_id that is not on the explicit allowlist, persisting a
-refusal record to the audit table before raising. list_replies() and
-get_permalink() take only a message_id -- by construction that
-message_id can only ever have come from a prior, already-gated
-list_messages() call, so there is no separate channel to check there.
-list_channels() is filtered down to allowlisted channels only, since it
-is enumeration, not a denied request.
+refusal record to the audit table before raising. list_channels() is
+filtered down to allowlisted channels only, since it is enumeration, not
+a denied request.
+
+list_replies()/get_permalink() take only a message_id, not a channel_id
+-- this gate resolves which channel that message_id belongs to from its
+OWN record of every message_id a gated list_messages()/list_replies()
+call has actually returned (_channel_id_by_message_id, populated here,
+not borrowed from whatever the wrapped reader happens to track
+internally), and enforces the allowlist against that. A message_id this
+gate has never itself seen is refused outright.
+
+2026-09-20 finding: an earlier version of this class delegated these two
+calls straight to the wrapped reader with no check at all here, relying
+entirely on GraphTeamsReader's own internal message_id->channel_id cache
+to make an out-of-scope call impossible in practice -- true only as long
+as every TeamsReader implementation happens to enforce that invariant
+itself, which is exactly the kind of "merely unlikely, not structurally
+impossible" gap this module's own docstring says is not good enough. See
+DECISION_LOG.md.
 """
 
 from __future__ import annotations
@@ -47,6 +61,11 @@ class ScopedTeamsReader(TeamsReader):
         self._reader = reader
         self._allowlist = set(allowlisted_channel_ids)
         self._db_path = db_path
+        # This gate's own record of which channel a message_id belongs
+        # to, populated only from messages THIS gate has already let
+        # through -- never trusted from the wrapped reader's own
+        # bookkeeping. See this module's docstring for why.
+        self._channel_id_by_message_id: dict[str, str] = {}
 
     @property
     def wrapped_reader(self) -> TeamsReader:
@@ -70,22 +89,47 @@ class ScopedTeamsReader(TeamsReader):
         delta_token: str | None = None,
     ) -> MessagePage:
         self._enforce(channel_id, "list_messages")
-        return self._reader.list_messages(channel_id, since=since, delta_token=delta_token)
+        page = self._reader.list_messages(channel_id, since=since, delta_token=delta_token)
+        for message in page.messages:
+            self._channel_id_by_message_id[message.id] = channel_id
+        return page
 
     def list_replies(self, message_id: str) -> list[TeamsMessage]:
-        return self._reader.list_replies(message_id)
+        channel_id = self._resolve_channel_id(message_id, "list_replies")
+        replies = self._reader.list_replies(message_id)
+        for reply in replies:
+            self._channel_id_by_message_id[reply.id] = channel_id
+        return replies
 
     def get_permalink(self, message_id: str) -> str:
+        self._resolve_channel_id(message_id, "get_permalink")
         return self._reader.get_permalink(message_id)
+
+    def _resolve_channel_id(self, message_id: str, operation: str) -> str:
+        """The independent check list_replies()/get_permalink() were
+        previously missing -- see this module's own docstring. A
+        message_id this gate has never itself returned from a gated
+        list_messages()/list_replies() call is refused outright, exactly
+        like an out-of-scope channel_id; a known message_id is then
+        re-checked against the current allowlist the same way, so a
+        channel removed from the allowlist after its messages were seen
+        is refused here too, not just for future list_messages() calls."""
+        channel_id = self._channel_id_by_message_id.get(message_id)
+        if channel_id is None:
+            reason = "message_id was never returned by a prior gated call on this reader"
+            self._record_refusal(message_id, operation, reason, entity_type="message")
+            raise ScopeViolationError(f"Refused {operation} for message_id={message_id!r}: {reason}")
+        self._enforce(channel_id, operation)
+        return channel_id
 
     def _enforce(self, channel_id: str, operation: str) -> None:
         if channel_id in self._allowlist:
             return
         reason = "channel_id is not on the explicit allowlist"
-        self._record_refusal(channel_id, operation, reason)
+        self._record_refusal(channel_id, operation, reason, entity_type="channel")
         raise ScopeViolationError(f"Refused {operation} for channel_id={channel_id!r}: {reason}")
 
-    def _record_refusal(self, channel_id: str, operation: str, reason: str) -> None:
+    def _record_refusal(self, entity_id: str, operation: str, reason: str, *, entity_type: str) -> None:
         conn = get_connection(self._db_path)
         try:
             conn.execute(
@@ -96,8 +140,8 @@ class ScopedTeamsReader(TeamsReader):
                 {
                     "actor": "scope_gate",
                     "action": "refuse_read",
-                    "entity_type": "channel",
-                    "entity_id": channel_id,
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
                     "details": json.dumps({"operation": operation, "reason": reason}),
                 },
             )

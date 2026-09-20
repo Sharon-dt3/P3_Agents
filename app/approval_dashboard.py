@@ -26,8 +26,24 @@ is no live Teams/Entra sign-in for either surface to bind to here.
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import streamlit as st
+from dotenv import load_dotenv
+
+# 2026-09-19 finding: this file was the one script in the whole project
+# that never called load_dotenv() (every scripts/*.py entry point does,
+# right after its own sys.path.insert -- see e.g. scripts/graph_login.py).
+# Streamlit runs as a long-lived process, so without this, TEAMS_PUBLISHER_MODE
+# and POWER_AUTOMATE_FLOW_URL were never read from .env at all: every
+# approval silently fell back to get_teams_publisher()'s "mock" default
+# and wrote to data/outbound_log.jsonl instead of actually reaching
+# Teams -- confirmed by comparing that log's timestamps against write_log's
+# 'sent' rows to the millisecond. See DECISION_LOG.md.
+load_dotenv()
 
 from p1.approval import service as approval_service
 from p1.config.loader import ChannelConfigStore
@@ -39,15 +55,54 @@ CURRENT_USER_ID = os.environ.get("P1_APPROVER_ID", "priya")
 st.title("P1 Channel -- approvals & config (fallback surface)")
 
 st.header("Pending approvals")
+
+# Display-only friendliness layer: approval.summary and .channel_id come
+# straight from p1.approval.service's _summarize(), which embeds the raw
+# Graph channel id (e.g. "19:ZVl0BYQCKWi4...@thread.tacv2") because that
+# id is what every other consumer (Copilot Studio included, per this
+# file's own docstring) needs verbatim. Swapping in each channel's own
+# display_name (from its ChannelConfig) is done here, for this screen
+# only, so a human approver reads a name instead of a Graph id -- the
+# underlying proposal_id/channel_id passed to approve_and_send()/reject()
+# below is never altered, only what's printed on screen.
+_channel_config_store = ChannelConfigStore()
+_display_name_cache: dict[str, str] = {}
+
+
+def _display_name(channel_id: str) -> str:
+    if channel_id not in _display_name_cache:
+        try:
+            _display_name_cache[channel_id] = _channel_config_store.get_effective_config(
+                channel_id, db_path=DB_PATH,
+            ).display_name
+        except KeyError:
+            _display_name_cache[channel_id] = channel_id  # unsynced channel -- show the raw id rather than hide it
+    return _display_name_cache[channel_id]
+
+
 pending = approval_service.list_pending_approvals(db_path=DB_PATH)
 if not pending:
     st.info("Nothing awaiting approval.")
 for approval in pending:
     with st.container():
-        st.write(f"**{approval.type}** -- {approval.summary}")
+        friendly_name = _display_name(approval.channel_id)
+        st.write(f"**{approval.type}** -- {approval.summary.replace(approval.channel_id, friendly_name)}")
+        created_display = approval.created_at.split(".")[0].replace("T", " ") + " UTC"
         st.caption(
-            f"proposal_id={approval.proposal_id} channel={approval.channel_id} created={approval.created_at}"
+            f"proposal_id={approval.proposal_id[:8]}… · channel={friendly_name} · created={created_display}"
         )
+        # The one thing an approver actually needs to judge -- the exact
+        # text that will be posted to Teams if this is approved. Every
+        # proposal type this job creates (daily_digest_publish, nudge,
+        # escalation) puts it under payload["content"] (see
+        # daily_job.py/nudge_job.py/escalation_job.py -- each builds
+        # send_fn to post fresh.payload["content"] verbatim), so showing
+        # it here is showing the real send, not a preview reconstructed
+        # separately.
+        content = approval.payload.get("content")
+        if content:
+            with st.expander("Message to be posted", expanded=True):
+                st.text(content)
         col1, col2 = st.columns(2)
         if col1.button("Approve", key=f"approve_{approval.proposal_id}"):
             result = approval_service.approve_and_send(

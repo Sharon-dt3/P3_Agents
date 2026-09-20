@@ -24,6 +24,7 @@ from p1.escalations.escalation_job import run_escalation_job
 from p1.nudges.nudge_job import run_nudge_job
 from p1.storage.classifications_repo import ClassificationStore
 from p1.storage.db import get_connection, init_db
+from p1.storage.digests_repo import DigestStore
 from p1.storage.escalations_repo import EscalationStore
 from p1.storage.messages_repo import MessageStore
 from p1.storage.nudges_repo import NudgeStore
@@ -230,6 +231,43 @@ def test_approve_and_send_a_channel_post(tmp_path):
 
     assert result.outcome == "sent"
     assert ("channel", CHANNEL_ID, "Daily digest") in publisher.calls
+
+
+def test_approve_and_send_a_channel_post_marks_the_digest_published(tmp_path):
+    """2026-09-19 finding: run_daily_digest_job() only ever calls
+    DigestStore.mark_published() from its own success path -- a
+    daily_digest_publish proposal approved here (the only way a real
+    human approval ever reaches this code) used to leave
+    has_ever_published() False forever, so CHN-17's "auto-approve every
+    day after the channel's first publish" never actually engaged for a
+    channel whose publishes are approved by a person rather than by a
+    background rerun of the job. Proves the digests row created
+    alongside this proposal (mirroring what generate_and_persist_daily_summary
+    would have written for the same day) is the one this marks published --
+    the same idempotency_key shape daily_job.py itself uses
+    (f"{channel_id}:{date}:daily", distinct from the proposal's own
+    f"{channel_id}:{date}:daily_publish" key)."""
+    db_path = tmp_path / "test.db"
+    _seed_db(db_path)
+    publisher = _RecordingPublisher()
+    store = ProposalStore(db_path)
+    digest_store = DigestStore(db_path)
+    digest_store.record(
+        channel_id=CHANNEL_ID, date=MON.isoformat(), type="daily",
+        content="Daily digest", idempotency_key=f"{CHANNEL_ID}:{MON.isoformat()}:daily",
+    )
+    proposal = store.create(
+        type="daily_digest_publish",
+        payload={"channel_id": CHANNEL_ID, "date": MON.isoformat(), "target_channel": CHANNEL_ID, "content": "Daily digest"},
+        original_model_output={}, source_refs=[], idempotency_key=f"{CHANNEL_ID}:{MON.isoformat()}:daily_publish",
+    )
+
+    assert digest_store.has_ever_published(CHANNEL_ID) is False
+
+    result = service.approve_and_send(proposal.id, approver_id="priya", publisher=publisher, db_path=db_path)
+
+    assert result.outcome == "sent"
+    assert digest_store.has_ever_published(CHANNEL_ID) is True
 
 
 def test_reject_records_audit_and_a_later_approve_is_refused(tmp_path):

@@ -12,7 +12,7 @@ from collections.abc import Iterable
 
 from pydantic import BaseModel
 
-from p1.adapters.teams_reader import DeltaTokenExpiredError, TeamsReader
+from p1.adapters.teams_reader import DeltaLinkRejectedError, DeltaTokenExpiredError, TeamsReader
 from p1.storage.messages_repo import MessageStore
 from p1.storage.sync_state import SyncStateStore
 
@@ -77,10 +77,24 @@ def _drain_pages(
     message_store: MessageStore,
 ) -> int:
     count = 0
+    last_good_token = token  # the most recent position we know Graph will actually accept
     while True:
-        page = reader.list_messages(channel_id, delta_token=token)
+        try:
+            page = reader.list_messages(channel_id, delta_token=token)
+        except DeltaLinkRejectedError:
+            # See DeltaLinkRejectedError's own docstring (a known Graph
+            # bug, first reproduced 2026-09-20 against a brand-new empty
+            # channel): the continuation link we were just handed and
+            # are now trying to follow is itself rejected. Retrying it,
+            # or restarting this same sync from scratch, reproduces the
+            # identical rejection -- so instead we stop paging here and
+            # persist the last position that actually worked
+            # (last_good_token, possibly None), not the rejected link.
+            sync_state.save_delta_token(channel_id, last_good_token)
+            return count
         message_store.upsert_messages(page.messages)
         count += len(page.messages)
+        last_good_token = token
         token = page.delta_token
         if not page.has_more:
             break

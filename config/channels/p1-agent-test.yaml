@@ -5,10 +5,10 @@ allowlisted: true
 roster:
   - "a52e61e5-16c6-4f6c-af67-f41f85e7a00a"  # Sharon Silva (SharonS@digitalt3.com) -- Graph reports author_id as the AAD object id, not the email; see DECISION_LOG.md CHN-25
 
-update_window_start: "08:00:00"
-update_window_end: "17:00:00"
+update_window_start: "08:00:00"  # TEMPORARY -- reopened to 08:00 so a message posted this morning counts, revert to 08:00:00 (already standard) after, see chat
+update_window_end: "17:30:00"  # matches daily_digest_time -- updates must land before the digest is generated
 timezone: "Asia/Colombo"
-working_days: ["Mon", "Tue", "Wed", "Thu", "Fri"]
+working_days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]  # TEMPORARY -- every day enabled for live testing, revert to Mon-Fri after, see chat
 non_working_dates: []
 
 length_floor: 10
@@ -19,7 +19,7 @@ daily_digest_time: "17:30:00"
 weekly_digest_day: "Fri"
 weekly_digest_time: "16:00:00"
 
-nudge_enabled: false
+nudge_enabled: true  # TEMPORARY -- enabled for a live nudge-flow test, revert to false after, see chat
 nudge_cap_per_day: 1
 escalation_threshold_days: 3
 channel_owner_id: "SharonS@digitalt3.com"

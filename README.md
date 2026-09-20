@@ -2,7 +2,7 @@
 
 Reads allowlisted Microsoft Teams channels, tracks who has and hasn't posted an update against a per-channel roster, and publishes daily and weekly digests. Part of the Incubation Pod Three-Agent Delivery Plan (P1 of P1/P2/P3).
 
-**Status:** P1's core build (CHN-01 through CHN-29) is complete against the mock Teams adapter, all 34 committed golden-case metrics passing (see Eval results below). The one open item is external, not code: CHN-01's live Graph credential is still awaiting tenant admin consent, so every capability below runs against `MockTeamsReader` today (see Status and Key decisions).
+**Status:** P1's core build (CHN-01 through CHN-29) is complete against the mock Teams adapter, all 34 committed golden-case metrics passing (see Eval results below). CHN-01's live Graph credential is no longer the open item: tenant admin consent landed, and as of 2026-09-19 `GraphTeamsReader` has read and persisted a real message from a real Teams channel (`p1-agent-test`) against the real DigitalT3 tenant -- see the Status table's C2 row and Key decisions below. Two of the three allowlisted channels (`proj-alpha`, `proj-beta`) are still mock-fixture ids, not real Graph channels -- see "Connecting to a real Microsoft Team" for what a full, not single-channel, live run still needs.
 
 ## Prerequisites
 
@@ -193,6 +193,20 @@ All three scripts are unit-tested against a fake MSAL app / fake reader
 `tests/unit/test_run_live_ingest_p1_agent_test.py`) -- none has ever
 made a real network call under test, the same discipline as
 `GraphTeamsReader` itself.
+
+`run_live_pipeline_p1_agent_test.py` goes one step further: ingest,
+classify, generate the digest, and attempt to publish it, all against
+`data/p1_live.db` and the real `p1-agent-test` channel. Its first-ever
+publish attempt for a channel comes back `awaiting_approval`, exactly
+like any other channel's first publish (see "Write path" above) -- a
+human approves it the same way, through `app/approval_dashboard.py`.
+**That dashboard reads `P1_DB_PATH` from `.env` (falling back to the
+shared `data/p1.db` if unset), so `.env` must set
+`P1_DB_PATH=data/p1_live.db` for a real pending approval to actually
+show up in it** -- found 2026-09-19 after a dashboard restart silently
+lost this pointer (it had only ever been set as an ephemeral shell
+export, never persisted in `.env`); now committed in `.env` itself so
+restarting the dashboard can never lose it again. See DECISION_LOG.md.
 
 ## Copilot Studio custom connector API
 

@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from p1.adapters.factory import get_teams_publisher
@@ -57,6 +58,7 @@ from p1.approval.proposals import (
 from p1.approval.write_guard import WriteRefusedError, guarded_send
 from p1.config.loader import ChannelConfigStore
 from p1.storage.db import DEFAULT_DB_PATH, get_connection
+from p1.storage.digests_repo import DigestStore
 
 
 @dataclass(frozen=True)
@@ -148,6 +150,7 @@ def approve_and_send(
     approver_id: str,
     proposal_store: ProposalStore | None = None,
     config_store: ChannelConfigStore | None = None,
+    digest_store: DigestStore | None = None,
     publisher=None,
     db_path: str | Path = DEFAULT_DB_PATH,
 ) -> ActionResult:
@@ -157,6 +160,7 @@ def approve_and_send(
     records identical rather than merely similar."""
     proposal_store = proposal_store or ProposalStore(db_path)
     config_store = config_store or ChannelConfigStore()
+    digest_store = digest_store or DigestStore(db_path)
     publisher = publisher or get_teams_publisher()
 
     try:
@@ -179,6 +183,23 @@ def approve_and_send(
         return ActionResult(proposal_id, "refused", str(exc))
     except Exception as exc:  # noqa: BLE001 -- guarded_send already logged send_failed; report, never raise past this seam
         return ActionResult(proposal_id, "send_failed", f"{type(exc).__name__}: {exc}")
+
+    if proposal.type == "daily_digest_publish":
+        # 2026-09-19 finding: run_daily_digest_job() (daily_job.py) only ever
+        # calls DigestStore.mark_published() from its OWN success path, at the
+        # tail end of the same call that both creates and sends a proposal in
+        # one go (the auto-approved-after-first-publish case). A proposal a
+        # human approves here, through either real surface, never runs back
+        # through that function at all -- so without this call,
+        # has_ever_published() would stay False forever for a channel whose
+        # publishes are only ever approved by a person, and CHN-17's own
+        # documented guarantee ("no channel ever receives an unexpected bot
+        # post" applies once, at the first publish, not every day after)
+        # would never actually engage. See DECISION_LOG.md.
+        digest_store.mark_published(
+            idempotency_key=f"{proposal.payload['channel_id']}:{proposal.payload['date']}:daily",
+            published_at=datetime.now(timezone.utc).isoformat(),
+        )
 
     return ActionResult(proposal_id, "sent", "sent")
 

@@ -114,6 +114,19 @@ def _client(monkeypatch, *, api_key: str | None = API_KEY) -> TestClient:
         monkeypatch.delenv(copilot_studio_api.API_KEY_ENV_VAR, raising=False)
     else:
         monkeypatch.setenv(copilot_studio_api.API_KEY_ENV_VAR, api_key)
+    # 2026-09-20: the real .env sets P1_DB_PATH=data/p1_live.db (added
+    # so the live Copilot Studio API reads the real live database
+    # instead of an empty default -- see copilot_studio_api.py's own
+    # _db_path() docstring). python-dotenv's load_dotenv() at that
+    # module's import time puts that value in THIS process's real
+    # os.environ for the rest of the pytest session, which would make
+    # every test below silently point at the real live db instead of
+    # its own isolated tmp_path one. _seed()'s own docstring already
+    # says the intended design is "no db_path threaded through the
+    # HTTP layer at all" -- this delenv is what actually restores that,
+    # by making _db_path() fall back to DEFAULT_DB_PATH like _seed()
+    # itself assumes.
+    monkeypatch.delenv(copilot_studio_api.DB_PATH_ENV_VAR, raising=False)
     client = TestClient(copilot_studio_api.app)
     client.__enter__()
     return client
@@ -148,7 +161,12 @@ def test_health_needs_no_api_key_and_reports_whether_one_is_configured(tmp_path,
     client = _client(monkeypatch, api_key=None)
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "api_key_configured": False}
+    # db_path added 2026-09-20 (see copilot_studio_api.py's own
+    # _db_path() docstring) -- "data/p1.db" here because _client()
+    # deletes P1_DB_PATH and this test's own monkeypatch.chdir(tmp_path)
+    # makes that relative default resolve inside the test's own
+    # throwaway directory, never the real repo's database.
+    assert response.json() == {"status": "ok", "api_key_configured": False, "db_path": "data/p1.db"}
 
     client = _client(monkeypatch, api_key=API_KEY)
     assert client.get("/health").json()["api_key_configured"] is True
