@@ -66,6 +66,46 @@ class MessageStore:
         finally:
             conn.close()
 
+    def list_root_message_ids(self, channel_id: str, since: str | None = None) -> list[str]:
+        """IDs of every non-deleted root message (thread_root_id IS NULL)
+        this channel has in `messages` -- the exact set a caller needs to
+        then fetch each root's replies via TeamsReader.list_replies(),
+        since Graph's own delta endpoint never returns replies at all
+        (see ingestion.sync.sync_channel_replies's own docstring and
+        DECISION_LOG.md's thread-replies-ingestion entry).
+
+        since, when given, is an ISO-8601 posted_at lower bound -- a
+        simple, explicit way to bound this to recently-active roots
+        instead of paying to re-check every reply-fetch call against
+        this channel's entire history on every tick, once a channel has
+        been running long enough for that to matter. Callers that don't
+        need bounding (a small/test channel, or a deliberate full
+        resync) simply omit it."""
+        conn = get_connection(self._db_path)
+        try:
+            if since is not None:
+                rows = conn.execute(
+                    """
+                    SELECT id FROM messages
+                    WHERE channel_id = ? AND thread_root_id IS NULL
+                      AND is_deleted = 0 AND posted_at >= ?
+                    ORDER BY posted_at
+                    """,
+                    (channel_id, since),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id FROM messages
+                    WHERE channel_id = ? AND thread_root_id IS NULL AND is_deleted = 0
+                    ORDER BY posted_at
+                    """,
+                    (channel_id,),
+                ).fetchall()
+        finally:
+            conn.close()
+        return [row["id"] for row in rows]
+
     @staticmethod
     def _ensure_member_exists(conn, author_id: str | None) -> None:
         """messages.author_id is a foreign key into members(id)

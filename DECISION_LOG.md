@@ -5142,3 +5142,882 @@ sync direction from that table into `ChannelConfigStore`'s SQLite/YAML
 store (poll-interval or event-driven, still to be decided), and the same
 live isolation/roster tests re-run against the new write path without
 disrupting the two channels already running.
+
+## 2026-09-20 -- Correction: a Dataverse table was never actually required for CHN-02's "surface" outcome; reconciling with the 2026-09-20 CHN-25 finding this session missed
+
+**What went wrong.** Earlier today, pushback on the original CHN-25
+decision ("Dataverse table found unnecessary") led to exploring Option A
+(Dataverse as live source of truth), then Option B (Dataverse as a
+synced mirror) -- both of which assume a new Dataverse table has to get
+built once the permissions wall clears. That exploration never
+re-checked this repo's own already-recorded finding, earlier the same
+day, that a literal Dataverse table was investigated and explicitly
+rejected -- see this file's "CHN-25's two 'not done, on purpose' items
+closed" entry. That earlier entry's reasoning still holds and was
+missed: building a separate Dataverse table would create a second copy
+of the exact same roster/window/exceptions data already held in
+`channel_config` (SQLite), which the row's own "reconciled, not
+duplicated" design rule rules out, and would regress the
+single-write-path guarantee `ChannelConfigStore.update_channel_config()`
+exists to provide (every write auditable through the one path,
+GC8-proven). Option A and Option B were both solving a problem that
+was already correctly solved a different way.
+
+**What actually already satisfies the row's outcome.** CHN-02's
+rationale is "the channel owner who knows the roster needs to maintain
+it without a deploy." That's already live, wired, and does not touch
+Dataverse at all: Copilot Studio's "Update Channel Config" Tool (one of
+the connector's 5 Tools, already attached to the "P1 Channel
+Intelligence" agent per the 2026-09-18 solution-aware entry) calls
+`copilot_studio_api.py`'s `/update_channel_config` endpoint, which calls
+`copilot_studio_connector.py::handle_update_channel_config()`, which
+calls `ChannelConfigStore.update_channel_config()` directly --
+`src/p1/adapters/copilot_studio_connector.py` lines ~116-141, confirmed
+by direct re-read this entry. A channel owner typing into the agent in
+Teams ("update my roster to add X") reaches the exact same write path
+`app/approval_dashboard.py`'s Streamlit form already reaches live today
+-- zero Dataverse tables, zero sync job, zero duplicated data.
+
+**Decision, corrected again.** No Dataverse table gets built for CHN-02,
+full stop -- not Option A, not Option B. The 2026-09-20 CHN-25 finding
+was right the first time. What's actually still open is getting that
+already-built path reachable from a real Teams conversation: the
+Copilot Studio tenant is out of credits, and the agent has never been
+published to a Microsoft Teams channel (both already logged, both
+unrelated to the Dataverse permissions wall from earlier today). A
+lighter fallback that sidesteps Copilot Studio entirely also exists on
+paper and was not tried: a Power Apps Canvas app -- "App" creation is
+NOT blocked for this account, unlike "Table" -- bound directly to the
+same "P1 Channel Approvals" custom connector, embedded as a Teams tab.
+Neither path needs a Dataverse table or the System Customizer role this
+file's admin-access ask was written for.
+
+**Not done, on purpose.** The admin-access ask from earlier today is
+left standing rather than withdrawn, since Dataverse customization
+privilege may still matter for something else in this programme later
+-- but it is no longer blocking CHN-02, and framing it as blocking
+CHN-02 (as this file's two most recent prior entries did) was the
+mistake this entry corrects.
+
+## 2026-09-20 -- CHN-02's Dataverse question, closed: no table built, decision confirmed by the user
+
+**Decision.** No Dataverse table gets built for CHN-02. Confirmed
+explicitly by the user after the correction above (Dataverse was never
+architecturally required for P1's own outcome; the "P1 C1 / P2 P6 /
+P3 O4" grouping in the master plan's Appendix D is a shared tool-choice
+convention across three structurally similar config capabilities, not a
+claim that P2/P3 read P1's own roster data).
+
+**Precise statement of what's actually true today, so this doesn't get
+overstated on re-read later.** "The channel owner maintains their roster
+without a deploy" is real and live-proven -- through
+`app/approval_dashboard.py` (Streamlit), which calls
+`ChannelConfigStore.update_channel_config()` directly, no code change or
+restart required for an edit to take effect. It is NOT yet proven
+through an actual Teams conversation. Copilot Studio's "Update Channel
+Config" Tool wraps the identical function
+(`copilot_studio_connector.py::handle_update_channel_config()`,
+equivalence-proven against the Streamlit path by
+`tests/unit/test_copilot_studio_connector.py`) and two of its sibling
+operations (health, list_pending_approvals) were confirmed live through
+the Power Platform Test panel on 2026-09-18 -- but
+`update_channel_config` itself was not individually re-verified there
+(see that day's entry, "not done, on purpose"), and no real Teams
+conversation with the published agent has ever successfully invoked any
+tool, because the one live test attempt hit `EnforcementUsageCredits`
+before reaching that point. So: the mechanism is code-complete and does
+not need Dataverse: the two things actually gating the "edit it from
+inside Teams" experience are the Copilot Studio tenant being out of
+credits and the agent never having been published to a Microsoft Teams
+channel -- both already logged, neither related to Dataverse or the
+permissions wall from earlier today.
+
+**Status of the admin-access ask.** Left standing, not withdrawn, per
+the earlier correction entry -- Dataverse customization privilege may
+still matter later (P2/P3's own analogous config capabilities, per
+Appendix D's grouping, once those agents actually get built -- CHN-33's
+spine extraction is still outstanding and unstarted). Not urgent, not
+blocking anything today.
+
+**This closes the Dataverse thread for CHN-02.** Three prior entries
+today (Option A, the "surface" reading/Option B switch, and the
+correction back to "no table needed") are superseded by this one as the
+final state; they're left in place rather than edited, since each one
+documents real reasoning that was actually acted on at the time -- this
+entry is the one that reflects where things actually landed.
+
+
+## 2026-09-20 -- Blocker 2 resolved live: "P1 Channel Intelligence" published with a Teams + Microsoft 365 channel
+
+**What was done, live, in the real Copilot Studio environment, with the user's
+explicit go-ahead ("then lets try to do blocker 2").** Clicked Publish on the
+"P1 Channel Intelligence" agent (Build view, no channel attached yet) --
+confirmed via the Publish dialog's own state: "Last published Sep 20, 2026,
+8:09 PM" with a green check, immediately after the first publish resolved.
+Then Add a channel -> Teams + Microsoft 365 -> Availability kept at its
+default, "Microsoft 365 Copilot and Microsoft Teams" (the user was asked
+first, since the dialog itself states this setting can't be changed after
+publishing, and chose to keep the default rather than narrow it to Teams
+only) -> Add channel -> Publish agent again. Second publish took noticeably
+longer than the channel-less one (~30s+) but resolved with an explicit
+in-app confirmation: "Your agent published successfully -- Your agent is now
+available on the configured channels," listing "Teams + Microsoft 365."
+Re-verified a third time afterward via the Publish dialog's own state:
+"Last published Sep 20, 2026, 8:15 PM."
+
+**Direct Teams install link, captured for real (not guessed).** Opened Share
+-> "Copy link (Microsoft Teams)." The app writes this to the OS clipboard
+with no on-screen text, so it was captured by hooking
+`navigator.clipboard.writeText` in the page's own JS context immediately
+before clicking copy:
+`https://teams.microsoft.com/l/app/?titleId=T_7426ed15-b8c6-44c5-83bd-701c1d4034e6`.
+This is the real, live titleId for this agent's Teams app registration --
+not a placeholder. The Share dialog's own "Share" action (which grants
+individuals/org access) was deliberately NOT clicked -- only "Copy link" was
+used, so no new people or org-wide access were granted this session. Currently
+only Sharon Silva (SS, owner) can use the agent; "Everyone in your
+organization" still shows "No permissions, unless specified."
+
+**What this actually resolves.** Blocker 2 (agent never published to a Teams
+channel) is closed: the agent is published, has a live Teams + Microsoft 365
+channel, and has a real install link. Blocker 1 (Copilot Studio tenant out of
+Copilot Credits) is UNCHANGED and still open -- publishing and adding a
+channel are build/config actions and did not touch the credits blocker.
+Installing the link and actually chatting with the agent in Teams will still
+hit `EnforcementUsageCredits` until an admin adds credits or capacity in the
+Power Platform admin center (confirmed out of reach for this account -- see
+the Sep 20 entry on the Teams-admin and Power-Platform-admin-center access
+denials). The link itself was not yet installed/tested end-to-end in a real
+Teams client this session.
+
+**Not done, on purpose.** Did not click "Share" to grant the user's own
+account or the organization access, since that is a standing-permission /
+account-setting change outside what was asked ("try to do blocker 2" was
+read as publish + channel + link, not as granting broad access). If the user
+wants specific people able to use the agent, that is a separate, explicit
+ask.
+
+
+## 2026-09-20 -- Full day-by-day delivery plan re-verified against real evidence (all 10 rows of the WBS table)
+
+**What triggered this.** The user pasted the master plan's whole
+day-by-day WBS table (Focus / What gets built / End-of-day definition of
+done, spine foundations through Gate G1) and asked to check through all
+of it -- not trust the table's own wording, verify each "definition of
+done" cell against real code, real tests, and real logged runs.
+
+**Method.** `pytest` cannot run from this sandboxed device_bash shell --
+confirmed again this session: `.venv`'s python symlinks point at
+`/opt/homebrew/...` (the real Mac), not reachable from this Linux VM,
+and `.venv/lib/python3.10/site-packages` itself is empty (uv installed
+via hardlinks into a Mac-side cache, not copied into the venv folder).
+So verification here means: read the actual test files' own docstrings
+and assertions, read `eval/results.jsonl`'s real recorded run, read
+`README.md`'s own status claims, and cross-check `DECISION_LOG.md`'s
+dated entries -- not re-running anything myself.
+
+**Result, row by row (WBS row -> verdict -> evidence):**
+
+1. Spine foundations + G0b -- CONFIRMED. `src/p1/llm/gateway.py` wraps
+   every model call through one path with `tenacity.Retrying`;
+   `structured.py`'s `generate_structured()` docstring: "validate-and-
+   retry," logs `structured_output_retry attempt=%d`. CHN-01: not just
+   documented-with-fallback -- actually live. README: "as of 2026-09-19
+   GraphTeamsReader has read and persisted a real message from a real
+   Teams channel (p1-agent-test) against the real DigitalT3 tenant."
+   Stronger than the row's own bar.
+
+2. Config/Graph adapter/scope gate -- CONFIRMED. README states it
+   directly: "ScopedTeamsReader ... enforces the channel allowlist at
+   the adapter boundary -- a chat or a non-allowlisted channel is
+   refused before any capability code ever sees it, and every refusal
+   is logged to audit." Live eval proof: GC5-gamma-channel-refused,
+   GC5-one-to-one-chat-refused, GC5-group-chat-refused all `passed:
+   true` in `eval/results.jsonl`'s latest run. A real gap was found and
+   fixed here too (`list_replies()`/`get_permalink()` had no
+   independent allowlist check) -- see the 2026-09-20 CHN-03/CHN-05
+   entry above.
+
+3. Ingestion hardening + seed data -- CONFIRMED for the delta-run half:
+   GC10's six metrics (message-count, edit-posted-at-preserved, edit-
+   content-updated, delete-handled, bot-flags-correct, system-flags-
+   correct) all `passed: true`. Fixture byte-identical claim is a
+   documented design property (`scripts/generate_seed_fixtures.py`:
+   "Deterministic (fixed random seed) -- re-running this always
+   produces byte-identical output"; `scripts/seed.py`: "deterministic
+   (seed=42)") but NOT independently re-verified this session (no test
+   found that regenerates and diffs) -- weaker evidence than the rest
+   of this row.
+
+4. Thin end-to-end slice G0 -- CONFIRMED, verbatim.
+   `tests/unit/test_participation_against_fixtures.py` has
+   `test_reaction_only_chatter_only_and_on_leave_members_each_land_correctly`
+   -- the exact three states the row names.
+
+5. Grounding + first numbers (GC1/2/5/10) -- CONFIRMED. GC1-precision
+   (1.0 vs target 0.8), GC2's three exact-match non-responder sets
+   (proj-alpha/gamma/beta), GC5-out-of-scope-message-count (0) all
+   `passed: true`.
+
+6. Daily summary (GC3/4/9) -- CONFIRMED. GC3-citation-rate 0.95/0.95,
+   GC4-fabrication-count 0/0, GC9-fact-divergence-count 0/0, all
+   passed. `test_daily_summary.py` has its own "honest empty summary"
+   section by name.
+
+7. Approval spine + publishing -- CONFIRMED, verbatim.
+   `tests/unit/test_daily_job.py`'s own docstring: "CHN-17's own
+   acceptance test: 'A clock-override run at three different channel-
+   local times produces three correctly timed digests and no
+   duplicates.'" GC6-suppressed-attempts (sent=1, refused=2) and GC8's
+   six pending/rejected-proposal-refused metrics all passed.
+
+8. Weekly roll-up + nudges (GC11) -- CONFIRMED. GC11-arithmetic-
+   mismatch-count (0/0) and GC11-non-working-day-scenario-check both
+   passed. GC7-nudge-cap-holds (1/1) and GC7-excluded-never-nudged (0/0
+for carol) cover the cap/never-nudged half live.
+
+9. Escalation + config proof (GC7/8/12) -- CONFIRMED, verbatim.
+   `tests/unit/test_escalation_job.py`'s own docstring: "CHN-23's own
+   acceptance test: 'With the threshold at three days, exactly...'"
+   GC12-set-moves-with-config (`measured: true`) plus config A/B
+   producing different non-responder sets on identical data -- this is
+   also independently confirmed live the same day (2026-09-20)  via
+   the separate SPN-04 acceptance-test entry above.
+
+10. Harden/measure/demo G1 -- PARTIALLY CONFIRMED. `eval/results.jsonl`'s
+    latest run (2026-09-19T09:13 UTC): `all_passed: true` across all 34
+    metrics, all 12 golden cases (GC1-GC12) represented -- committed,
+    real. A real finding-and-fix during hardening is documented (CHN-05's
+    ingestion orchestrator had no member-sync capability; closed, see
+    README's CHN-31 bullet and the matching DECISION_LOG entry). README
+    confirms clean-clone-no-Graph-credentials directly: "it needs no
+    Graph/tenant credential at all, since TEAMS_READER_MODE and
+    TEAMS_PUBLISHER_MODE both default to mock ... a fresh clean-clone run
+    reports awaiting_approval for both channels -- that is the correct,
+    honest first result." BUT two sub-items are NOT done: (a) the actual
+    recording -- `scripts/run_walkthrough.py`'s own docstring says "Run
+    this once, ON CAMERA" -- the backing script and its test
+    (`test_run_walkthrough.py`) exist and pass, but no video/cast file is
+    committed anywhere in the repo, and nothing in DECISION_LOG.md says
+    the recording itself has been made; (b) spine extraction (CHN-33) --
+    confirmed still outstanding and unstarted, per this file's own
+    2026-09-20 closing entry above ("CHN-33's spine extraction is still
+    outstanding and unstarted"), and no `spine` package/directory exists
+    anywhere in the repo.
+
+**Bottom line.** 8 of 10 rows fully confirmed with direct evidence (test
+docstrings quoting the row's own acceptance language, or passing
+eval/results.jsonl metrics, or explicit README claims). Row 3's fixture-
+determinism half is asserted in code comments but not independently
+re-verified. Row 10 (Gate G1) has its hardest, most code-verifiable
+parts done (eval harness, documented fix, clean-clone-no-credentials)
+but its two human-action deliverables -- the actual recording and the
+spine package extraction -- are not done.
+
+
+## 2026-09-20 -- CHN-32's open question, resolved live: [source](url) markdown links DO render as clickable hyperlinks in real Teams, and DO navigate correctly
+
+**What was open.** The 2026-09-19 SPN-08 entry left this explicitly
+unconfirmed: whether digest citation links posted through the real
+Power Automate flow render as clickable hyperlinks inside Teams itself,
+or as literal bracket/parenthesis text -- flagged as needing "a direct
+check: click a [source](...) link inside the real Teams channel and
+confirm it navigates to the real message."
+
+**What was checked, live, in the real Teams web client (teams.cloud.microsoft),
+signed in as Sharon Silva.** Opened the real p1-agent-test channel and
+found a real, already-posted digest from the live pipeline: "# p1-agent-test
+-- Daily Summary (2026-09-20)", posted by Workflows at 5:37 PM, with
+multiple "What moved" bullets each ending in a (source) citation.
+These render as ordinary blue, underlined hyperlinks -- not raw
+markdown syntax. Clicked one ("Finished wiring the daily digest
+pipeline end-to-end for p1-agent-test (source)"): it navigated into a
+thread view and landed precisely on the real 9:55 AM source message
+with that exact text, highlighted -- confirmed by screenshot, not
+assumed from the click succeeding without an error.
+
+**Resolution.** SPN-08's open question is closed: yes, on both halves
+-- the links render as genuinely clickable, and clicking one navigates
+to the correct source message. This directly de-risks CHN-32's own
+"most convincing ten seconds" beat (a permalink clicked live) for a
+supplementary p1-agent-test recording: the mechanism is proven to
+work end-to-end against the real tenant today, not just designed to.
+
+**Still true, unchanged.** p1-agent-test has only one real roster
+member (Sharon Silva) and none of the planted-difficulty data the mock
+fixtures carry, so it still cannot carry CHN-32's full 8-beat narrative
+on its own -- this resolves the live-permalink risk specifically, not
+the separate dataset-richness gap. The two-clip plan (mock-channel
+walkthrough for the full narrative + a short live p1-agent-test clip
+for the permalink beat) is unblocked by this finding, not replaced by
+it.
+
+## 2026-09-20 -- scripts/run_walkthrough.py actually executed for real, end to end, all 8 beats -- first time ever outside its unit test
+
+**What was actually run, for real, per the user's explicit "can we do this first" request.** Built a
+throwaway lightweight venv (system python3.10 + only the packages the script's import chain needs --
+not the project's own broken `.venv`, which is unusable from this sandbox because it symlinks to a
+macOS-only interpreter). Ran `run_walkthrough.run_walkthrough()` directly against a fresh, disposable
+db (`data/p1_scripted_verify.db`, deleted afterward) -- not the unit test's throwaway `tmp_path`, and
+not the shared demo `data/p1.db`.
+
+**Beats 1-2, first pass: real LLM gateway, real fixtures, no overrides at all.**
+Deleted `data/p1.db` for a genuinely clean state first (an earlier attempt against a stale db printed a
+misleading "0 message(s)" -- traced to leftover state from an incomplete prior cleanup, not a bug; the
+`_drain_pages()` counting logic itself is correct). The clean run printed real, first-ever-observed
+terminal output: `ingested 19:proj-alpha@thread.tacv2: 90 message(s)`, `ingested
+19:proj-beta@thread.tacv2: 103 message(s)`, and both the ingest-side and chat-side refusals firing
+exactly as documented. This confirms beats 1-2 work against the real production code paths with no
+substitutions at all.
+
+**Beats 3-8: real production code, LLM calls only substituted.** This sandboxed Linux VM cannot reach
+this project's actually-configured LLM provider (`.env` has `LLM_PROVIDER=ollama`, which normally runs
+on the user's own Mac and isn't reachable from here -- confirmed via direct `.env` grep, correcting an
+earlier wrong guess on my part that this was the separately-documented Bedrock IAM issue; it isn't --
+that issue only matters if `LLM_PROVIDER=bedrock`, which it isn't here). Since a real model call isn't
+possible from this sandbox, ran the identical entry point with the project's own `ScriptedGateway` (the
+exact stand-in `tests/unit/test_run_walkthrough.py` already uses for its passing unit test) passed via
+`run_walkthrough(gateway=...)` -- everything else (rule engine, classifier wiring, ledger, digest
+generation, weekly rollup, nudge job, approval/rejection, escalation bundle assembly) is the real,
+unmodified production code. Result: all 8 beats produced genuine, real terminal output for the first
+time ever outside a unit test -- rule decision on message `proj-alpha-0033` (`outside_update_window`),
+classifier decision on `proj-alpha-0036` (`update`, confidence 0.9), the ledger's three real states,
+a real rendered daily summary with a well-formed permalink, a real rendered weekly roll-up with real
+percentage deltas, a real nudge run showing awaiting_approval -> one rejected by hand -> one approved
+by hand -> that approval auto-sending on the rerun -> a second consecutive miss auto-approving on day
+2, and a real escalation evidence bundle with real bundled text. `run_walkthrough()` returned normally,
+no exception, end to end.
+
+**One genuine new finding, not previously known: beat 7 will try a real network call if run with the
+project's actual `.env` as-is.** `.env` has `TEAMS_PUBLISHER_MODE=power_automate` (the real, live
+publisher), not mock. First attempt (no override) hit `PowerAutomatePublishError: ... ProxyError: 403
+Forbidden` -- this sandbox's network egress allowlist blocks that specific Power Automate host, so this
+is an environment limitation on my end here, not a code defect. Re-ran with `TEAMS_PUBLISHER_MODE=mock`
+forced via env var (the same one-line-swap the adapter factory is designed for) and beats 7-8 completed
+identically in logic, just logging instead of sending. Separately confirmed the beta-channel roster
+(`amara.okonkwo`, `diego.martinez`, etc.) are fixture/demo identities, not real Azure AD member IDs, so
+even on the user's own Mac with real network access this call would not reach a real person -- but
+nobody has actually run beat 7 against the real Power Automate flow to confirm what it does with a
+fixture ID, so that specific claim (that it's harmless on a real run) is inference, not something
+observed.
+
+**What this settles for CHN-32.** The script itself, watched running for real: works, beats 1-8, no
+code defects found. Two things worth knowing before the actual recording take, both new from this run:
+(1) `data/p1.db` needs a fresh delete immediately before the real take -- confirmed firsthand that a
+stale db produces a misleading zero-count line; (2) if recording against the real `.env` as committed,
+beat 7 onward will attempt a real Power Automate call and, on this sandbox, that call is blocked by
+network egress -- unconfirmed whether it succeeds, fails cleanly, or does something unexpected on the
+user's own Mac where the network path is different. Worth a quick real check on the user's own machine
+before the take, not assumed either way.
+
+## 2026-09-20 -- scripts/run_walkthrough.py rebuilt into an 11-beat full tour covering all 9 W1/W2 DoD lines, both channels -- two real findings surfaced along the way
+
+**Why.** The user asked for every demo scenario built so far to actually run, live, on camera, covering
+both `proj-alpha` and `proj-beta`, mapped exactly to the 9 "end-of-day definition of done" lines in
+`docs/MASTER_IMPLEMENTATION_PLAN.md`'s W1 D1-W2 D9 table (which together cover GC1-GC12). The original
+8-beat script (see the entry directly above this one) proved beats 1-8 work, but a gap analysis against
+those 9 lines found 4 missing live moments -- the LLM retry demo (W1 D1), delta-sync + fixture
+reproducibility (W1 D3), per-channel-local-time scheduled publishing via the real
+`run_daily_digest_job()` (the original script bypassed it entirely, calling
+`generate_and_persist_daily_summary` directly), and the eval harness's own numbers on screen (W1 D5) --
+plus every beat only ever showed one channel at a time instead of both. User picked "Full build" to
+close every gap rather than ship a partial tour.
+
+**What changed.** `scripts/run_walkthrough.py` went from 8 beats to 11, every one of them calling real,
+unmodified production code (no second demo-only path anywhere):
+1. LLM retry -- a local throwaway schema/gateway proves `generate_structured()`'s own retry loop.
+2. Ingest + refuse (unchanged logic, renumbered).
+3. Chat refused at the boundary (unchanged logic, renumbered).
+4. NEW -- two consecutive delta syncs (0 new messages second time), `diff-edit-01`'s `posted_at`
+   preserved across its edit, and a live fixture-regeneration diff (see finding #1 below).
+5. Rule + classifier decision, now on BOTH channels.
+6. Ledger, now on BOTH channels.
+7. NEW -- `run_daily_digest_job()` (the real scheduled-publish entry point, previously unused by this
+   script) run 3x per channel: awaiting_approval -> still pending -> approved by hand -> published
+   exactly once, `write_log` proving the two earlier attempts were refused, not silently dropped. Both
+   channels' own configured local time/timezone.
+8. Weekly roll-up, now on BOTH channels.
+9. Nudges -- proj-beta's original approve/reject/auto-approve flow, PLUS a new proj-alpha section (see
+   below).
+10. Escalation evidence bundle, now on BOTH channels.
+11. NEW -- `scripts/run_eval.py`'s real harness run inline, printing all 34 golden-case metrics
+    (GC1-GC12), ending in `ALL PASS`.
+
+**proj-alpha's new nudge/escalation story: fatima.hassan.** Found by directly querying
+`build_ledger()` day-by-day across the whole fixture window (not assumed): fatima is
+`DIFF-CHATTER-01` -- she posts a message almost every day, but every organic message is chatter
+("Thanks!", "Sounds good."), never an update, so the ledger counts her like genuine silence. Her real
+silence run is 2025-06-09 through 2025-06-12 (Mon-Thu, 4 consecutive working days -- she genuinely
+contributes real updates on 06-05 and 06-06, which is what makes 06-09 a clean streak start). Since
+proj-alpha's committed `nudge_enabled` is `false` (its real, intentional value), the script turns it on
+for this run only via `ChannelConfig.model_copy(update={"nudge_enabled": True})` -- the same
+in-memory-only override pattern this project already uses for clock overrides -- never touching
+`config/channels/proj-alpha.yaml`. The escalation evidence bundle that comes out the other end is a
+genuinely nice demo beat: it names 4 real message IDs she posted on the third day and says outright
+"posted, but nothing counted as an update" -- proving the escalation path is driven by the ledger's
+counted updates, not by whether someone was around.
+
+**Finding #1 (real, in the codebase, not fixed here): the seed fixture generator has silently drifted
+from the committed fixtures since CHN-28.** Beat 4 regenerates `seed/fixtures/*` into a disposable
+temp dir and diffs it against the committed files -- something nobody had actually done end-to-end
+before. Result: `channels.json` and `members.json` are byte-identical; `messages.json` and
+`labels.csv` are each missing exactly 3 entries relative to the regenerated output --
+`DIFF-SHORT-01`, `DIFF-THREADOFF-01`, `DIFF-ROSTER-01`. Root-caused via `git log`/`git show`: commit
+`3920f95` ("CHN-28: fix the harness's real weakest spot -- half of CHN-08's rules had zero coverage",
+2026-09-18) added these 3 rows straight into the committed JSON/CSV by hand to close a real rule-
+coverage gap, without also updating `scripts/generate_seed_fixtures.py` to produce them. The
+generator's own docstring claims "deterministic... re-running this always produces the same output"
+and calls itself the fixture "single source of truth" -- both true for everything the generator itself
+plants, but that invariant has been silently false for these 3 rows since CHN-28. Not fixed in this
+session (would mean editing the generator's random-draw sequencing without a chance to re-verify
+against the other 20 planted categories under time pressure before the recording); beat 4 now reports
+the true diff honestly instead of claiming full byte-identical reproduction, explicitly calling out
+that this specific 3-row gap is the one known, tested, intentional exception. Worth a real ticket:
+either fold DIFF-SHORT-01/THREADOFF-01/ROSTER-01 into the generator properly, or update its docstring
+to stop claiming full reproduction.
+
+**Finding #2 (real latent bug, in `src/p1/escalations/escalation_job.py`, not fixed here): the streak
+walker has no lower bound at a channel's actual data start date.** First attempt at proj-alpha's
+escalation picked 2025-06-03/04/05 as fatima's streak (a reasonable-looking guess from her longest
+silence run spanning the whole window) and got a real, reproducible surprise: the escalation's own
+idempotency key came back keyed on `streak_start_date=2025-02-05` -- four months before the fixture
+window even starts. Root cause: 2025-06-02 is the very first day either channel has any data at all,
+and the walker's job is to walk backward from the escalation day until it hits a day the person
+actually contributed (per its own docstring, point 1) -- but `build_ledger()` has no concept of "before
+the channel existed," so for a member whose silence appears to start on the fixture's first day, the
+walker just keeps finding `no_message` indefinitely into a data desert with nothing to make it stop,
+until some incidental boundary condition (not fully traced) finally halts it on a date that means
+nothing. This is a real gap worth a ticket in a system whose channels have genuine multi-year history,
+even though it can never surface in THIS fixture (every channel's data starts 2025-06-02). Worked
+around for the demo, not patched in code: picked 2025-06-09 instead, immediately preceded by a real
+contribution on 06-06, so the walker correctly stops there and reports a sane `streak_start_date`.
+Confirmed with a direct script (`build_ledger()` called for every day 06-02 through 06-16) before
+committing to the date.
+
+**Also caught and fixed before it became a real problem: I nearly overwrote this repo's actual
+committed `seed/fixtures/messages.json` and `labels.csv` on disk.** While investigating finding #1
+above, ran `generate_seed_fixtures.py` once with its cwd pointed at this repo's root instead of a
+scratch temp dir (a plain mistake, not something the script itself did) -- it writes to the relative
+path `seed/fixtures/` from wherever it's invoked, so this genuinely overwrote the real working-tree
+files in place. Caught it immediately via `git status`/`git diff`, and restored both files with `git
+checkout -- seed/fixtures/messages.json seed/fixtures/labels.csv` before doing anything else. Verified
+clean afterward (`git status --short seed/fixtures/` empty). No commit was ever made with the bad
+content, and the real fixtures are confirmed back to their exact committed state.
+
+**Verification.** Ran the real, final `scripts/run_walkthrough.py` (imported by its real module name,
+not a test copy) end to end in this sandbox's throwaway venv, `ScriptedGateway` standing in for the
+unreachable local Ollama and `TEAMS_PUBLISHER_MODE=mock` standing in for the unreachable Power
+Automate host -- exit 0, all 11 beats printed real output, all 34 eval-harness metrics PASS, zero
+FAILs. `git status` confirmed no unintended files changed in the real repo afterward (only the
+intended `scripts/run_walkthrough.py` replacement). All scratch test files and throwaway `data/*.db`
+files created during this investigation were deleted afterward.
+
+**What's still true from the entry above this one, unchanged:** `data/p1.db` should still get a fresh
+delete immediately before the actual recording take (it does not currently exist on disk, so this is
+already satisfied as of right now, but will exist again the moment anyone runs the script against the
+real `.env`); and beat 7 onward will still attempt a real Power Automate call if run against the
+committed `.env` (`TEAMS_PUBLISHER_MODE=power_automate`) -- unconfirmed on the user's own Mac, where
+the network path differs from this sandbox's blocked egress.
+
+## 2026-09-21 -- CHN-33: spine package extracted and committed; two "Shared spine" items deferred to G2, on purpose
+
+Executed CHN-33's own WBS row literally: "Extract the reusable spine (gateway, schema layer,
+proposals, write guard, grounding kernel, harness, scheduler, prompt registry, config pattern) into
+an installable internal package with its own tests." All nine named components now live at
+`packages/spine/` as a `uv` workspace member (`spine` on PyPI-style import), wired into root
+`pyproject.toml` via `[tool.uv.workspace]`/`[tool.uv.sources]`. Two of the nine (scheduler, config
+pattern) needed genuine generalization rather than a file copy, since both were hard-coupled to P1's
+concrete `ChannelConfig` type: `spine.scheduling.scheduler` now takes a caller-supplied `to_spec()`/
+`job_kwargs()` pair instead of assuming P1's field names, and `spine.config.store.ConfigStore[T]` is a
+generic committed-YAML-plus-live-DB-override pattern using JSON-blob storage in two new tables
+(`spine_config_store`/`spine_config_audit`), deliberately NOT a rewrite of P1's own live
+`ChannelConfigStore` (see the 2026-09-20 CHN-25 entries above -- that schema stays exactly as-is,
+still the only thing either running `live_runner` process talks to). The other seven moved as literal
+copies with internal `p1.xxx` imports rewritten to `spine.xxx`: LLM gateway, structured-output/retry,
+the SQLite migration engine, proposal record, write guard, grounding kernel, prompt registry, and the
+eval harness framework. Also moved, beyond CHN-33's literal list but named by the plan's own doctrine
+line ("P1 also builds two adapters P2 inherits outright"): the `TeamsReader`/`TeamsPublisher` ABC
+interfaces only, not their concrete mock/Graph/PowerAutomate implementations, which stay in P1.
+
+Real proof, not a claim: a fresh venv, `pip install -e .`, a genuine 25-test pytest suite written
+against deliberately alien toy configs (`ProjectConfig`, `MorningBriefConfig` -- names with nothing to
+do with P1) to prove actual reusability rather than replaying P1's own shapes, all 25 passing; then a
+real wheel built and installed into a second, unrelated `/tmp/fresh_project` directory with a
+standalone smoke test exercising `ConfigStore`, the scheduler, `ProposalStore`, and the grounding
+kernel -- all passed. This directly satisfies CHN-33's acceptance test ("Spine package installs into a
+fresh project and its tests pass independently of P1"). One real bug found and fixed in the process:
+`ConfigStore.get_effective()` raised a raw `sqlite3.OperationalError` instead of `ConfigNotFoundError`
+when called before any `sync_to_db()` had run for that `db_path` -- fixed by having it call
+`self.ensure_schema()` first; caught by the test suite itself, not by inspection.
+
+P1 confirmed untouched: the only changes committed to the real repo are the 33 new files under
+`packages/spine/` and one additive edit to root `pyproject.toml` (the workspace member, the sources
+entry, and `spine` added to the dependency list with a comment noting nothing imports it yet). No file
+under `src/p1/` or `scripts/` was touched. Both `live_runner_p1_agent_test.py` and
+`live_runner_teams_agent_test.py` are running the exact same code they were before this task started.
+
+**Gap found and deliberately deferred, not missed.** The master plan's own "Shared spine" summary line
+(section 13, "How this plan is shaped") names ten components, not nine, and its wording differs from
+CHN-33's WBS row: it says "adapter framework" and "approval surface" where CHN-33's row instead says
+"scheduler" and "config pattern." Both of the ten-item list's two extra names are real, existing P1
+code that is NOT in `packages/spine/`: `p1.adapters.factory` (`get_teams_reader()`/
+`get_teams_publisher()` -- env-var-driven mock/real selection, plus always wrapping the reader in
+`ScopedTeamsReader`) and `p1.approval.service` (`list_pending_approvals()`/`approve_and_send()`/
+`reject()` -- the one seam CHN-25's own acceptance test rests on, that both the Copilot Studio
+connector and `scripts/approve_cli.py`'s Streamlit/CLI fallback call through so neither surface can
+produce a different audit outcome than the other; see the 2026-09-18 CHN-25 entry on this same seam).
+Deliberately not generalized this session: `approve_and_send()`'s `_resend_plan()` is keyed to P1's
+exact three proposal types (`daily_digest_publish`/`nudge`/`escalation`) and does a
+`ChannelConfigStore.get_effective_config(...).channel_owner_id` lookup for escalation's target --
+genuinely P1-specific business logic, not a thin coupling like the scheduler's field names were. Given
+the user's own read of the plan's phrasing -- "Extracted into an installable internal package at gate
+G1 and hardened at G2" -- the decision made here was to treat CHN-33 as satisfied against its own
+literal WBS text now, and treat these two components as G2 hardening work, not a gap to close before
+moving to P2. Recorded here so it is not silently lost: if G1 is scored strictly against the ten-item
+"Shared spine" line rather than CHN-33's own nine-item WBS row, this is a real, known, two-item
+shortfall against that broader list, with a stated reason and a stated remediation point (G2).
+
+**Also not yet done, tracked separately, not a CHN-33 gap:** converting P1's eight clean origin files
+into thin re-export shims pointing at `spine` (so no P1 call site needs to change), and rewiring
+`publishing/scheduler.py`/`config/calendar.py` onto the new generic spine code. Deliberately held for
+after the user runs `uv sync` and confirms `packages/spine`'s own test suite passes on their own Mac,
+specifically to protect the two live_runner processes currently running tonight's nudge/escalation
+test.
+
+## 2026-09-21 -- CHN-33 (continued): P1's 14 origin call sites converted to spine shims, real end-to-end verified
+
+Following the user's own `uv sync` + `uv run pytest -v` confirmation (25/25 passing on their Mac, not
+just this sandbox), converted P1's side of the extraction: the eight clean components named in CHN-33's
+WBS row (gateway, schema layer, proposals, write guard, grounding kernel, harness, prompt registry) plus
+the Teams reader/publisher ABC interfaces -- twelve files total -- into thin re-export shims at their
+original `src/p1/...` paths, pointing at `spine`. Two more files (`publishing/scheduler.py`,
+`config/calendar.py`) became thin P1-facing wrappers rather than pure re-exports, since both needed the
+ChannelConfig-specific glue spine's generalized versions deliberately don't own. All 14 changes are
+edits to existing files at their existing paths -- no P1 call site anywhere needed to change, and this
+was verified directly (see below), not assumed.
+
+**Real bug caught before it reached the live repo, not after.** `p1/storage/db.py`'s `run_migrations()`
+takes `migrations_dir: Path = MIGRATIONS_DIR` as a default argument -- and that default binds at
+function-DEFINITION time to whichever module defines the function. spine's copy of `run_migrations()`
+was moved verbatim, so its own `MIGRATIONS_DIR` resolves to `packages/spine/src/spine/storage/migrations`
+-- a directory that doesn't exist. A naive `from spine.storage.db import *` shim would have made
+`init_db()` (which nearly every live script and both `live_runner_*.py` processes call with no
+`migrations_dir` argument) silently glob an empty/nonexistent directory and apply ZERO of P1's six real
+migrations -- `channels`, `channel_config`, `messages`, `proposals`, `write_log`, `nudges`,
+`escalations`, all of it. Not an error, not a crash -- just silently absent tables the next time
+anything called `init_db()` against a fresh path. Caught by reading the actual code path (not by
+running the test suite blind, which uses `tmp_path` fixtures for every DB test and so would have masked
+nothing about the bug's actual production trigger), before any shim was written. Fixed by redefining
+`run_migrations()`/`init_db()` in the p1 shim as thin wrappers that always pass P1's own `MIGRATIONS_DIR`
+through explicitly to spine's real engine; `get_connection()`/`DEFAULT_DB_PATH` (genuinely
+location-independent) are re-exported directly.
+
+**Verification, in order:**
+1. Grepped the entire `src/p1` tree, `scripts/`, AND `tests/unit/` (not just the two trees checked
+   during extraction) for every `from p1.<one of the 14 modules> import ...` site -- about 90 call
+   sites across ~40 files -- to build the exact, complete public-API surface each shim must re-export,
+   rather than guessing from memory or re-exporting `*`.
+2. Built a throwaway `p1` package skeleton in the cloud sandbox around the real, just-written shim
+   files, installed against the real, already-pip-installed `spine` package, and ran genuine assertions
+   lifted verbatim from this repo's own `tests/unit/test_scheduler.py` and `tests/unit/test_calendar.py`
+   -- CronTrigger field values, `is_due()` timezone-conversion cases, `parse_instant()`'s three
+   fractional-second-length cases, `local_datetime()`/`is_working_day()` -- all reproduced exactly.
+3. Specifically reproduced `tests/unit/test_storage_db.py`'s own migration test against a fake
+   P1-specific migration file (distinct from spine's own migrations, which don't exist) to prove
+   `init_db()` really does still apply P1's own schema through the shim -- this is what caught and then
+   confirmed the fix for the MIGRATIONS_DIR bug above.
+4. Grepped `tests/unit/` for `mock.patch(...)`/`monkeypatch.setattr(...)` targeting any of the 14
+   modules' dotted paths -- none found beyond one unrelated patch on `teams_reader_graph.time.sleep`,
+   so no test's mocking strategy is broken by the re-export indirection.
+5. Checked `tests/unit/test_no_inline_prompts.py` (an AST-based lint test scanning `src/`+`scripts/`
+   for hand-written prompt literals) against the new shim files specifically: their only string content
+   is a module docstring, which that test's own logic already excludes -- confirmed not a false
+   positive, not just assumed.
+6. `py_compile` on every new/changed file; syntax-clean.
+
+**Not yet done, and this is the real remaining ask of the user:** run the actual `uv run pytest` (full
+suite, repo root, not just `packages/spine`'s own 25) on their Mac. Everything above is real,
+executed verification against the actual shim files and the actual installed spine package -- but it
+is still a sandbox reconstruction of the relevant slice of P1, not the real 100+-file `tests/unit/`
+suite running against the real repo with the real `.venv`. That is the one confirmation this session
+cannot produce itself (`device_bash` has been wedged the entire session), and it is what actually
+closes CHN-33 out. Also unchanged by this session, by design: `config/loader.py`'s `ChannelConfigStore`
+stays exactly as it is, and the "adapter framework"/"approval surface" gap against the master plan's
+broader ten-item list (see the entry above this one) remains deferred to G2.
+
+## 2026-09-21 -- CHN-33 (continued): root pyproject.toml's workspace wiring silently failed to write, twice, despite the write tool reporting success both times
+
+Real ops finding, not a code bug: after committing all 14 P1-side shims and asking the user to run
+`uv sync` + `uv run pytest tests/unit -q` on their Mac, every test failed to collect with
+`ModuleNotFoundError: No module named 'spine'`. Root cause, found by re-staging and reading
+`pyproject.toml` directly off the user's Mac rather than trusting the earlier write confirmation: the
+file on disk was still the original 821-byte version with none of the `[tool.uv.workspace]`/
+`[tool.uv.sources]`/`"spine"` dependency wiring -- even though the write that added it, days earlier in
+this same session, had reported `{"written": [...], "rejected": []}` with no error. The file's mtime had
+in fact changed (consistent with a write happening), but the bytes that landed were the pre-edit
+content, same size as the original. A second attempt at the same write, using a freshly re-staged mtime
+as the guard, was verified this time by an independent re-stage-and-read afterward (not by trusting the
+"written" response alone) -- confirmed correct, all 1302 bytes, workspace section present.
+
+**Takeaway recorded here on purpose:** a `device_commit_files`-style "written, no rejection" result is
+not sufficient confirmation that content actually landed correctly for a file this critical to the
+build -- an independent read-back after the write is what actually confirms it, and that is now this
+session's standing practice for `pyproject.toml`-class changes specifically. `uv lock`/`uv sync` on the
+user's Mac silently doing nothing ("Resolved 87 packages... Checked 78 packages", no install line) was
+the first correct signal something was wrong -- it should have shown `spine` being added.
+
+## 2026-09-21 -- CHN-33 (continued): all 469 real unit tests pass; root cause of the "spine not importable" saga was a corrupted root .venv, unrelated to the extraction itself
+
+After the workspace wiring fix (previous entry), `uv sync`/`uv lock` reported installing spine correctly, but `python -c "import spine"` and `uv run pytest tests/unit -q` kept failing with `ModuleNotFoundError: No module named 'spine'` (59 collection errors), reproducing identically across multiple `uv sync` runs.
+
+Diagnosis (all done by independently inspecting the real files on disk via the device bridge's list/stage tools, since `device_bash` stayed wedged for the entire session -- `uv run`/shell commands were run by the user and pasted back):
+
+- `spine.pth` and `p1.pth` were both present in `.venv/lib/python3.10/site-packages`, byte-correct, pointing at the right `src` directories. `uv pip show spine` confirmed uv's own package DB considered it correctly, editably installed.
+- Manually prepending `packages/spine/src` to `sys.path` and importing worked instantly -- proving the spine package content itself was always fine.
+- `uv run python -c "import sys; print(sys.path)"` showed NEITHER `p1.pth`'s nor `spine.pth`'s target directory ever landing in `sys.path`, even though `.venv/lib/.../site-packages` itself (where those `.pth` files live) was present. So `.pth`-file processing was silently failing for BOTH workspace members' editable installs in this one venv -- not something introduced by CHN-33.
+- Ruled out a `PYTHONPATH` env var (found exported, duplicated, in `~/.zshrc` line 17, pointing at an unrelated old project) as the cause: unsetting it and retrying still failed the same way.
+- `.venv/lib/python3.10/site-packages/_virtualenv.pth` (`import _virtualenv`, the `virtualenv` tool's system-site-isolation seed hook, alphabetically first) was present, suggesting this particular `.venv` had accumulated some non-standard state across the several different `uv sync` invocations earlier in this session (including the one accidentally run from inside `packages/spine` that first created a stray standalone venv there).
+
+Rather than keep reverse-engineering exactly why this one venv's `.pth` processing broke, rebuilt it clean: `rm -rf .venv && uv sync`. This did not touch source, the lockfile, or the two live `live_runner_*.py` processes (a deleted-and-recreated `.venv` directory doesn't affect a process that already has its interpreter loaded in memory). Confirmed fresh:
+
+```
+uv sync            -> Installed 79 packages, including "+ p1==0.1.0" and "+ spine==0.1.0 (from file:///.../packages/spine)"
+python -c "import spine; print(spine.__file__)"   -> spine OK: .../packages/spine/src/spine/__init__.py
+uv run pytest tests/unit -q                        -> 469 passed, 1 warning in 16.74s
+```
+
+**CHN-33 acceptance is now genuinely, independently verified end-to-end on the real repo**: the spine package extraction, all 14 P1-side shim/wrapper files (including the `run_migrations`/`MIGRATIONS_DIR` binding fix), and the root `pyproject.toml` workspace wiring are all correct. The entire "spine not importable" saga across this session was a red herring caused by a corrupted local `.venv`, not by anything in the extraction itself -- worth remembering if a similar "package installed but not importable" symptom shows up again on this machine: check for a broken/accumulated venv before re-auditing the package or its `pyproject.toml` wiring.
+
+Deferred (unchanged from the earlier entry, still deferred to G2 on the user's explicit decision): `p1/adapters/factory.py` (adapter framework) and `p1/approval/service.py` (approval surface) were not extracted into spine this gate.
+
+## 2026-09-21 -- CHN-33 (continued): systemic sys.path gap across 31 scripts + app/approval_dashboard.py, all fixed
+
+Streamlit's approval_dashboard.py hit `ModuleNotFoundError: No module named 'spine'` even though `uv run pytest`/`uv run python -c` had already proven spine importable in this exact venv. Root cause: `app/approval_dashboard.py` has a hardcoded `sys.path.insert(0, .../  "src")` (predating CHN-33), so `p1` always imports regardless of `.pth` processing -- but there was no equivalent insert for `packages/spine/src`, so anything reaching `p1.adapters.teams_publisher` (which does `from spine.adapters.teams_publisher import TeamsPublisher`) depended entirely on `spine.pth`'s site-packages redirect activating, which does not reliably happen under Streamlit's own script-execution model (still not fully root-caused). Fixed by adding a second `sys.path.insert` for `packages/spine/src`, mirroring the existing pattern.
+
+While recovering a stalled Graph token (`scripts/graph_seed_token_cache.py`), the exact same crash reproduced for a second, unrelated script -- confirming this isn't a Streamlit-only problem but a systemic gap: `grep` found the same `sys.path.insert(0, .../ "src")` pattern, with no spine equivalent, in 31 more files under `scripts/`. All 31 were fixed the same way, in one batch, mechanically (only the sys.path section touched, nothing else): graph_seed_token_cache.py, live_runner_p1_agent_test.py, live_runner_teams_agent_test.py, test_weekly_today_adhoc.py, test_spn04_roster_changes_non_responders.py, test_spn04_isolation.py, test_publish_idempotency_p1_agent_test.py, test_llm_gateway_smoke.py, test_live_config_update_adhoc.py, test_digest_today_adhoc.py, sync_to_supabase.py, sync_from_dataverse.py, sync_channel_config_to_db.py, seed.py, search_messages_p1_agent_test.py, run_live_pipeline_teams_agent_test.py, run_live_pipeline_p1_agent_test.py, run_live_nudge_p1_agent_test.py, run_live_ingest_p1_agent_test.py, run_eval.py, run_daily.py, reset_daily_digest_days.py, repost_stuck_digest.py, preview_daily_summary_teams_agent_test.py, power_automate_smoke_test.py, live_scope_gate_test_p1_agent_test.py, graph_smoke_test.py, graph_replies_smoke_test.py, graph_login.py, diagnose_second_channel_delta_400.py, approve_cli.py.
+
+Notably this includes `live_runner_p1_agent_test.py` and `live_runner_teams_agent_test.py` themselves -- both currently-running live processes were started before today's `.venv` rebuild and so never actually hit this bug, but had it been present, restarting either one after today's venv rebuild would very likely have failed to start with this identical error. Fixed proactively, not because either process is broken right now.
+
+Every edited file was syntax-checked (`py_compile`) before committing, and every commit was independently re-staged and byte-count-verified afterward, per the standing practice from this session's earlier pyproject.toml incident.
+
+The underlying question of *why* `spine.pth` doesn't reliably activate in some execution contexts (Streamlit, a freshly-launched `uv run python scripts/*.py`) but does in others (`pytest`, `python -c`) remains open and unexplained. The sys.path.insert fix works around it reliably everywhere it's applied, but if a *new* script is added later that imports anything under `p1.adapters`/`p1.approval`/`p1.llm`/etc. without this same two-line sys.path pattern, it can hit this identical error. Worth fixing at the source (or at minimum documenting the required pattern for new scripts) rather than continuing to patch reactively.
+
+## 2026-09-21 -- Thread replies were never ingested by the live pipeline (fixed)
+
+**Finding.** Adding two members to `p1-agent-test` and having them reply in
+a thread under an existing message never showed up in the database, even
+after the sys.path fix restored silent Graph token refresh and ingest ticks
+went from `[ingest] SKIPPED` to genuinely running. Root cause: Microsoft
+Graph's `/teams/{team}/channels/{channel}/messages/delta` endpoint -- the
+only thing `GraphTeamsReader.list_messages()` calls, and therefore the only
+thing `ingestion.sync.sync_channel()`/`_drain_pages()` ever call -- returns
+top-level root messages only. A thread reply only ever surfaces via a
+separate, per-root `GET .../messages/{id}/replies` call
+(`TeamsReader.list_replies()`). That method has existed on every
+`TeamsReader` implementation (mock, Graph, scope-gated) since CHN-03/04 and
+is unit-tested in isolation, but was never called anywhere in the live
+ingestion path -- only from standalone smoke-test scripts. This meant no
+thread reply from any member, old or new, could ever reach `messages`,
+`classifications`, the daily digest, or nudge/escalation tracking, despite
+`config/channels/*.yaml`'s own `count_thread_replies: true` implying
+replies were meant to count. Not an auth or scheduling bug -- a missing
+feature in the ingestion path itself.
+
+**Fix.** Three small, reader-agnostic pieces, wired together only in the
+live_runner scripts that actually use them, per Liskov substitution (every
+`TeamsReader` -- mock, Graph, scope-gated -- must keep working identically
+through `sync_channel()`/`sync_channel_replies()`):
+
+1. `MessageStore.list_root_message_ids(channel_id, since=None)`
+   (`src/p1/storage/messages_repo.py`) -- returns every non-deleted root
+   message id (`thread_root_id IS NULL`) this channel has, the set a
+   caller needs before it can ask for each root's replies.
+2. `ingestion.sync.sync_channel_replies(reader, channel_id,
+   root_message_ids, message_store)` (`src/p1/ingestion/sync.py`) -- loops
+   `reader.list_replies(root_id)` for each given root and upserts the
+   results. Reader-agnostic; contains nothing `ScopedTeamsReader`-specific.
+   Safe to rerun every tick -- `MessageStore.upsert_messages()` is an
+   idempotent `INSERT ... ON CONFLICT DO UPDATE`.
+3. `ScopedTeamsReader.note_known_message(message_id, channel_id)`
+   (`src/p1/governance/scope_gate.py`) -- lets a caller re-establish a root
+   message id as known-good to a *fresh* gate instance. Necessary because
+   `_poll_ingest()` builds a brand-new `ScopedTeamsReader` every tick, and
+   `_channel_id_by_message_id` lives only in that instance's memory (see
+   2026-09-20's hardening entry above) -- so a root ingested in an earlier
+   tick would otherwise be permanently refused with `ScopeViolationError`
+   the moment this tick tried `list_replies()` on it, even though it is
+   already committed, on-allowlist, known-good data. Still runs through
+   `_enforce()` first, so it cannot be used to assert an out-of-scope
+   channel_id -- only to re-assert something already in scope. Covered by
+   new tests in `tests/unit/test_scope_gate.py` (success on an allowlisted
+   channel, `ScopeViolationError` + audit record on a non-allowlisted one).
+
+`_poll_ingest()` in both `scripts/live_runner_p1_agent_test.py` and
+`scripts/live_runner_teams_agent_test.py` now runs this between the
+existing `sync_channel()` call and the classify/persist step: read back
+every known root via `list_root_message_ids()`, re-assert each one via
+`note_known_message()`, call `sync_channel_replies()`, log the count, then
+classify as before -- so a reply ingested this tick is classified in the
+same tick, not the next one.
+
+New tests: `test_scope_gate.py` (`note_known_message` success/refusal/audit),
+`test_ingestion_sync.py` (`sync_channel_replies` fetch, idempotent rerun,
+zero-replies case), `test_messages_repo_member_registration.py`
+(`list_root_message_ids` excludes replies and deleted roots, is scoped per
+channel, honours `since`).
+
+**Caveat.** The two running live_runner processes read their own source at
+startup and do not hot-reload -- this fix only takes effect once each is
+restarted. Restarting also means the immediate next ingest tick will, for
+the first time, walk every existing root message's replies (bounded by
+this channel's current small history; `list_root_message_ids()` accepts an
+optional `since` lower bound for when that no longer holds).
+
+**Not yet done.** The two new members' replies will only actually reach
+`members`/`messages` once a live_runner process with this fix has run and
+polled. Adding their AAD object ids to `config/channels/p1-agent-test.yaml`'s
+`roster:` -- the original ask that led to this finding -- still needs that
+data first.
+
+## 2026-09-21 -- Thread-replies fix (continued): note_known_message() also had to seed GraphTeamsReader's own cache
+
+**Finding, from the first live restart with the fix above.** Both
+live_runner processes restarted cleanly and got past the sys.path/token
+issues, but the very first ingest tick on each failed:
+
+```
+[ingest] FAILED -- KeyError: "Unknown channel for message_id='...' --
+list_messages() must be called for its channel before
+list_replies/get_permalink."
+```
+
+Root cause: `ScopedTeamsReader.note_known_message()` (added above) only
+ever seeded the *gate's own* `_channel_id_by_message_id` cache. But
+`ScopedTeamsReader.list_replies()` still delegates to
+`self._reader.list_replies(message_id)` -- the wrapped `GraphTeamsReader`
+-- which resolves `channel_id` from its *own*, entirely separate
+`_channel_id_by_message_id` cache (see `teams_reader_graph.py`'s own
+docstring; this separation was already known and documented, just not
+accounted for in the first version of this fix). Seeding only the gate's
+cache let the gate's own check pass, but the call was then still refused
+one layer down, inside the wrapped `GraphTeamsReader`, which had never
+itself seen that message_id in this process's lifetime.
+
+**Fix.** `GraphTeamsReader` gained its own `note_known_message(message_id,
+channel_id)` (`src/p1/adapters/teams_reader_graph.py`), seeding its own
+cache directly. `ScopedTeamsReader.note_known_message()`
+(`src/p1/governance/scope_gate.py`) now forwards to the wrapped reader's
+`note_known_message`, duck-typed via `getattr`/`callable` rather than an
+`isinstance` check against `GraphTeamsReader` specifically -- so this
+keeps working for any `TeamsReader` implementation that needs the same
+seeding, and is a no-op for one that doesn't (`MockTeamsReader` has no such
+method and needs none, since its own `list_replies()` scans every
+channel's messages directly with no cache to resolve).
+
+New tests: `test_teams_reader_graph.py` (`list_replies` still raises
+`KeyError` for an unseen message on a fresh instance; `note_known_message`
+lets it resolve without a prior `list_messages()` call), `test_scope_gate.py`
+(`note_known_message` forwards to a wrapped reader that exposes the same
+method; does not forward -- and does not raise -- when the wrapped reader
+doesn't have one).
+
+**Status.** Not yet re-verified live -- both live_runner processes need a
+second restart to pick this up. `uv run pytest tests/unit -q` still
+pending from the user to confirm both this and the original thread-replies
+fix pass against the real repo.
+
+## 2026-09-21 -- Thread-replies fix (continued): pytest's own pythonpath was missing packages/spine/src
+
+**Finding.** `uv run pytest tests/unit -q` failed at collection with
+`ModuleNotFoundError: No module named 'spine'` across 19 test modules --
+none of them touched by the thread-replies fix itself (`test_calendar.py`,
+`test_classifier.py`, `test_channel_config.py`, etc.), so this was a
+pre-existing environment gap surfacing the first time pytest was actually
+run in this session, not a regression from the fix above.
+
+Root cause: `pyproject.toml`'s `[tool.pytest.ini_options]` had
+`pythonpath = ["src"]` only. That option is pytest's own path-injection
+mechanism -- independent of Python's `site.py` `.pth` processing -- which
+is exactly why every `p1.*` import kept resolving fine (the errors were
+always "no module named spine", never "no module named p1"). CHN-33's
+spine extraction added `packages/spine/src` as a second path every
+`p1/*.py` module now needs, wired only through the venv's `spine.pth`
+(site-packages) redirect -- and a live diagnostic this session confirmed
+that redirect does not reliably activate even for a bare
+`uv run python -c "import spine"` (`sys.path` printed with no `src` or
+`packages/spine/src` entry at all, despite `spine.pth` existing with the
+correct absolute path and the real `packages/spine/src/spine/` package
+being fully intact on disk) -- consistent with, and now directly
+confirming, this session's earlier "some execution contexts don't process
+.pth reliably" finding. `uv sync` reported "Checked 79 packages" with no
+changes, ruling out a lock/install-state problem.
+
+**Fix.** One line in `pyproject.toml`:
+
+```toml
+[tool.pytest.ini_options]
+pythonpath = ["src", "packages/spine/src"]
+```
+
+Same fix, in spirit, as the 32-file `sys.path.insert` batch fix earlier
+this session -- `packages/spine/src` was omitted from an explicit path
+list that already existed for exactly this reason, in yet another context
+(pytest's own config, this time, not a hand-written script). The root
+cause of *why* `.pth` processing itself is unreliable across contexts
+remains unexplained and undocumented beyond "confirmed, not yet
+root-caused" -- every fix so far (scripts, pytest) has been to stop
+depending on it, not to repair it.
+
+**Verified.** `uv run pytest tests/unit -q` -- 482 passed (469 previously
++ 13 new tests from this fix: 5 in `test_scope_gate.py`, 3 in
+`test_ingestion_sync.py`, 3 in `test_messages_repo_member_registration.py`,
+2 in `test_teams_reader_graph.py`). Both live_runner processes already
+confirmed live and clean (`[ingest] N reply message(s) synced across M
+thread(s)`, no `FAILED`) on both `p1-agent-test` and `Teams-agent-test`.
+`p1-agent-test`'s roster now includes Himanshu Ranjan
+(`230d27f7-dd11-407c-8822-8947f0068611`) and Esandu Obadaarachchi
+(`442e9b43-e50a-446c-9c4b-e612e9036bd8`) alongside Sharon Silva. The
+thread-replies ingestion gap (this entry's original 2026-09-21 finding
+above) is now fully fixed, live-verified, and test-covered end to end.
+
+## 2026-09-21 -- Escalation messages now use the member's real display name
+
+**Finding.** After manually correcting `members.display_name` for Sharon
+Silva, Himanshu Ranjan, and Esandu Obadaarachchi in the live DB (the
+auto-registered placeholder is the AAD id itself, per
+`messages_repo.py`'s own `_ensure_member_exists` docstring), a check of
+the actual rendering code showed the fix had no visible effect anywhere:
+`daily_job.py`, `facts.py`, and `ledger.py` never reference
+`display_name` at all, and `escalation_job.py`'s own
+`_render_escalation_message()` interpolated `member_id` directly into
+the message sent to the channel owner -- the one place in this pipeline
+that actually names a specific person for someone else to read.
+`nudge_job.py`'s own message never names the recipient at all (it's a
+direct message *to* them), so it needed no change.
+
+**Fix.** Added `_resolve_display_name(member_id, db_path=...)` to
+`escalation_job.py` -- a plain `members` table lookup, falling back to
+the bare `member_id` if no row exists (defensive; every real author is
+auto-registered on ingest, and `nudges.member_id`/`messages.author_id`
+both carry a real `REFERENCES members(id)` foreign key, so a candidate
+reaching this code path -- which requires a prior nudge, itself FK-bound
+to `members` -- is guaranteed to already have a row; this fallback is
+belt-and-suspenders, not a reachable production path). `_evaluate_member()`
+now resolves the display name once per escalation and passes it into
+`_render_escalation_message()` (renamed parameter, same rendering logic).
+
+New test: `test_escalation_message_uses_the_members_display_name_not_the_raw_member_id`
+in `test_escalation_job.py`, seeding a member with a display_name
+deliberately different from their member_id (this file's own `db_path`
+fixture otherwise seeds `display_name == member_id` for every member,
+which made the original bug invisible to every existing test in this
+file). A second, "missing member row" defensive-fallback test was
+attempted and dropped -- constructing it through `run_escalation_job()`'s
+public API is not actually possible without violating the same
+`REFERENCES members(id)` foreign key this fix relies on, since escalation
+requires a prior nudge and nudging itself requires a `members` row to
+exist first.
+
+**Verified.** `py_compile` clean on both files; `uv run pytest tests/unit -q`
+still pending re-run from the user to confirm 483 passed (482 previous +
+this one new test).

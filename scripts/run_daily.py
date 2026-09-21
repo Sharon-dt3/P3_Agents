@@ -62,6 +62,7 @@ from pathlib import Path
 # Ensure `src/` is importable regardless of how this script is invoked --
 # same workaround run_eval.py and seed.py already use (see DECISION_LOG.md).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "spine" / "src"))
 
 from p1.adapters.factory import get_teams_publisher
 from p1.adapters.fixtures import load_teams_fixtures

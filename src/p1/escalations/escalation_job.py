@@ -98,7 +98,7 @@ from p1.participation.ledger import (
     ParticipationRecord,
     build_ledger,
 )
-from p1.storage.db import DEFAULT_DB_PATH
+from p1.storage.db import DEFAULT_DB_PATH, get_connection
 from p1.storage.escalations_repo import EscalationStore
 from p1.storage.nudges_repo import NudgeStore
 
@@ -208,12 +208,40 @@ def _evidence_days(
     return days
 
 
-def _render_escalation_message(config: ChannelConfig, member_id: str, days: list[dict]) -> str:
+def _resolve_display_name(member_id: str, *, db_path: str | Path) -> str:
+    """Looks up this person's current members.display_name for the
+    escalation message the channel owner reads -- a real name once a
+    human has corrected the auto-registered placeholder (see
+    messages_repo.py's own _ensure_member_exists docstring), still just
+    their AAD id otherwise, since that is exactly what auto-registration
+    stores until then. 2026-09-21 fix (see DECISION_LOG.md): this used
+    to interpolate member_id directly into the message text, so a
+    corrected members.display_name row had no path to ever showing up
+    here -- the one place in this whole pipeline that actually names a
+    specific person for someone else (the channel owner) to read. Falls
+    back to member_id itself if the member row is somehow missing
+    entirely (should not happen -- every author is auto-registered on
+    ingest, see messages_repo.py -- but this message must never crash
+    over a missing name)."""
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute("SELECT display_name FROM members WHERE id = ?", (member_id,)).fetchone()
+    finally:
+        conn.close()
+    return row["display_name"] if row and row["display_name"] else member_id
+
+
+def _render_escalation_message(config: ChannelConfig, display_name: str, days: list[dict]) -> str:
     """A fixed, deterministic template -- never a model call. Every
     date in the streak is listed with what the ledger actually says for
     that day, plus the update window that was applied -- "an escalation
     without dates and message IDs is an accusation" is this row's own
-    framing, and this is what makes that literally false here."""
+    framing, and this is what makes that literally false here.
+
+    display_name is whatever _resolve_display_name() resolved -- a real
+    name when one is known, the bare member_id otherwise -- this
+    function itself has no opinion on which; it just renders whatever
+    string it is given."""
     window = (
         f"{config.update_window_start.strftime('%H:%M')}-"
         f"{config.update_window_end.strftime('%H:%M')} {config.timezone}"
@@ -227,7 +255,7 @@ def _render_escalation_message(config: ChannelConfig, member_id: str, days: list
             lines.append(f"  - {d['date']}: no message at all")
     day_list = "\n".join(lines)
     return (
-        f"Hi! {member_id} has missed {len(days)} consecutive working day(s) of updates in "
+        f"Hi! {display_name} has missed {len(days)} consecutive working day(s) of updates in "
         f"{config.display_name} (update window {window}):\n{day_list}\n"
         "Flagging in case a check-in would help -- they were already nudged directly before this."
     )
@@ -340,7 +368,8 @@ def _evaluate_member(
 
     if proposal is None:
         days_detail = _evidence_days(member_id, streak_dates, ledger_cache)
-        content = _render_escalation_message(config, member_id, days_detail)
+        display_name = _resolve_display_name(member_id, db_path=db_path)
+        content = _render_escalation_message(config, display_name, days_detail)
         payload = {
             "channel_id": channel_id,
             "member_id": member_id,

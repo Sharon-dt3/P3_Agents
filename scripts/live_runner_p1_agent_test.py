@@ -19,7 +19,10 @@ Three independent things run on their own schedule, in one process:
      a timer instead of a keypress. This is what makes a message posted
      mid-morning actually visible to a same-day digest or nudge, instead
      of only ever being as fresh as the last time someone happened to
-     run a script.
+     run a script. Each tick also refreshes the read-only Supabase
+     mirror (scripts/sync_to_supabase.py) afterward -- see
+     _sync_supabase_mirror's own docstring for why that's safe to fail
+     silently and never part of the scored system.
 
   2. The daily digest job, via p1.publishing.scheduler.build_scheduler()
      -- a real APScheduler CronTrigger firing run_daily_digest_job at
@@ -65,6 +68,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "spine" / "src"))
 
 from dotenv import load_dotenv
 
@@ -81,7 +85,7 @@ from p1.config.loader import ChannelConfigStore
 from p1.detection.pipeline import classify_and_persist
 from p1.escalations.escalation_job import run_escalation_job
 from p1.governance.scope_gate import ScopedTeamsReader
-from p1.ingestion.sync import sync_channel
+from p1.ingestion.sync import sync_channel, sync_channel_replies
 from p1.llm.gateway import LLMGateway
 from p1.nudges.nudge_job import run_nudge_job
 from p1.publishing.scheduler import build_scheduler
@@ -144,6 +148,32 @@ def _load_channel_messages(db_path: str, channel_id: str) -> list[TeamsMessage]:
     ]
 
 
+def _sync_supabase_mirror(db_path: str) -> None:
+    """Refreshes the read-only Supabase mirror (scripts/sync_to_supabase.py)
+    right after this tick's ingest/classify -- exactly what that script's
+    own docstring already recommends ("re-running this after any ingest is
+    exactly how you keep the mirror current"), just on the same timer as
+    ingestion instead of a person remembering to run it by hand.
+
+    2026-09-21: added on request, since the mirror had no automatic
+    refresh path at all before this -- it only ever updated when someone
+    manually ran `uv run python scripts/sync_to_supabase.py`.
+
+    Imported lazily, inside this function, not at module level: this
+    mirror is explicitly NOT part of the scored system (see that script's
+    own docstring -- SQLite stays the system of record), so a missing
+    SUPABASE_DB_URL, a psycopg2 import problem, or a transient network
+    error to Supabase must never be able to take down the ingest poll it
+    rides along with -- the same posture _poll_ingest already takes
+    toward Graph/classification errors below."""
+    try:
+        from sync_to_supabase import run_sync
+
+        run_sync(sqlite_path=db_path)
+    except Exception as exc:  # noqa: BLE001 -- see docstring
+        _log(f"[supabase] SKIPPED -- {type(exc).__name__}: {exc}")
+
+
 def _poll_ingest(*, tenant_id: str, client_id: str, team_id: str, gateway, db_path: str) -> None:
     """One ingestion tick. Never raises -- a failed poll (expired
     refresh token, a transient Graph error, a rate limit) is logged and
@@ -189,10 +219,29 @@ def _poll_ingest(*, tenant_id: str, client_id: str, team_id: str, gateway, db_pa
         note = " (resynced from scratch)" if result.resynced else ""
         _log(f"[ingest] {result.messages_ingested} new message(s){note}")
 
+        # Graph's /messages/delta endpoint (the only thing sync_channel()
+        # above ever calls) never returns thread replies -- only root
+        # messages. Every known root (this tick's new ones AND every
+        # earlier tick's, read back from `messages`) is re-fetched for
+        # replies on every tick; note_known_message() re-establishes each
+        # root as known-good to THIS tick's fresh gate instance first, or
+        # a root ingested in an earlier tick would be refused with
+        # ScopeViolationError (see scope_gate.py's own docstring and
+        # DECISION_LOG.md's thread-replies-ingestion entry). Safe and
+        # idempotent every tick -- MessageStore.upsert_messages() is an
+        # upsert, not an insert.
+        root_ids = message_store.list_root_message_ids(CHANNEL_ID)
+        for root_id in root_ids:
+            reader.note_known_message(root_id, CHANNEL_ID)
+        reply_count = sync_channel_replies(reader, CHANNEL_ID, root_ids, message_store)
+        _log(f"[ingest] {reply_count} reply message(s) synced across {len(root_ids)} thread(s)")
+
         messages = _load_channel_messages(db_path, CHANNEL_ID)
         outcomes = classify_and_persist(messages, config, gateway, db_path=db_path)
         noise_count = sum(1 for o in outcomes if o.label == "noise")
         _log(f"[classify] {len(outcomes)} message(s) evaluated: {len(outcomes) - noise_count} signal, {noise_count} noise")
+
+        _sync_supabase_mirror(db_path)
     except Exception as exc:  # noqa: BLE001 -- a poll tick must never crash the scheduler thread
         _log(f"[ingest] FAILED -- {type(exc).__name__}: {exc}")
 

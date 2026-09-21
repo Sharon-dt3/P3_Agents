@@ -105,6 +105,47 @@ class ScopedTeamsReader(TeamsReader):
         self._resolve_channel_id(message_id, "get_permalink")
         return self._reader.get_permalink(message_id)
 
+    def note_known_message(self, message_id: str, channel_id: str) -> None:
+        """Lets a caller re-establish a message_id this gate already
+        legitimately saw in an earlier process tick as known, without
+        re-fetching it through list_messages()/list_replies() again.
+
+        _channel_id_by_message_id lives only in memory (see this
+        module's own docstring), so a fresh ScopedTeamsReader instance
+        -- built new every ingestion poll, e.g. by
+        scripts/live_runner_*.py's own _poll_ingest() -- starts each
+        tick with no memory of messages a *previous* tick's gate
+        instance already saw and persisted to `messages`. Without this,
+        list_replies() on a root message ingested in an earlier tick
+        would raise ScopeViolationError forever, even though that root
+        message is already known-good, on-allowlist, committed data --
+        not a bypass of the gate, just a way to hand it back its own
+        prior, already-legitimate finding.
+
+        Still runs through _enforce() first: a caller cannot use this to
+        smuggle an out-of-scope channel_id past the allowlist -- it can
+        only ever re-assert something for a channel already in scope.
+
+        2026-09-21 live finding (see DECISION_LOG.md): seeding only
+        THIS gate's own cache was not enough on its own -- GraphTeamsReader
+        keeps its own, entirely separate _channel_id_by_message_id cache
+        (see teams_reader_graph.py's own docstring), and list_replies()
+        below delegates to self._reader.list_replies(), which resolves
+        channel_id from *that* cache, not this one. Without also seeding
+        the wrapped reader, a message this gate now considers known
+        still made self._reader.list_replies() raise KeyError. Forwarded
+        here via duck-typing (getattr/callable), not an isinstance check
+        against GraphTeamsReader specifically, so this keeps working for
+        any TeamsReader implementation that needs the same seeding, and
+        does nothing extra for one that doesn't (MockTeamsReader has no
+        such method and needs none -- its own list_replies() scans every
+        channel's messages directly, with no cache to seed)."""
+        self._enforce(channel_id, "note_known_message")
+        self._channel_id_by_message_id[message_id] = channel_id
+        note_on_wrapped = getattr(self._reader, "note_known_message", None)
+        if callable(note_on_wrapped):
+            note_on_wrapped(message_id, channel_id)
+
     def _resolve_channel_id(self, message_id: str, operation: str) -> str:
         """The independent check list_replies()/get_permalink() were
         previously missing -- see this module's own docstring. A

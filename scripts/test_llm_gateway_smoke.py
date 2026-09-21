@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "spine" / "src"))
 
 from p1.llm.gateway import LLMGateway  # noqa: E402
 from p1.prompts import PromptRegistry  # noqa: E402

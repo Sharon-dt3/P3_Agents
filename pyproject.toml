@@ -21,6 +21,13 @@ dependencies = [
     "streamlit>=1.64.0",
     "tenacity>=9.1.4",
     "uvicorn[standard]>=0.53.0",
+    # CHN-33: the extracted spine package (packages/spine) -- gateway,
+    # schema layer, proposals, write guard, grounding kernel, prompt
+    # registry, eval harness, scheduler, config-store pattern. Not yet
+    # imported anywhere in src/p1 (see packages/spine/README.md); added
+    # here so `uv sync` wires the workspace member before that migration
+    # starts.
+    "spine",
 ]
 
 [project.scripts]
@@ -37,4 +44,21 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+# "src" alone used to be enough because every p1.* import resolved through
+# it. CHN-33 (see DECISION_LOG.md) extracted packages/spine/src, and
+# p1/*.py now imports from spine.* too -- but that path was only ever
+# reachable via the venv's spine.pth (site-packages) redirect, which
+# 2026-09-21 live testing confirmed is unreliable outside a handful of
+# execution contexts (see DECISION_LOG.md's sys.path entries). pytest's
+# own pythonpath option is not one of those unreliable contexts -- it
+# adds these paths itself, independent of site.py's .pth processing --
+# so listing packages/spine/src here directly, the same fix already
+# applied via sys.path.insert to every script/app entry point, is the
+# fix rather than a workaround for a workaround.
+pythonpath = ["src", "packages/spine/src"]
+
+[tool.uv.workspace]
+members = ["packages/spine"]
+
+[tool.uv.sources]
+spine = { workspace = true }

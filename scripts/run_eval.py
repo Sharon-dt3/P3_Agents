@@ -35,6 +35,7 @@ from pathlib import Path
 # works around the unreliable editable-install .pth resolution seen in
 # this environment (see DECISION_LOG.md).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "spine" / "src"))
 
 from p1.eval.cases import GoldenCaseRegistry
 from p1.eval.registrations import register_all

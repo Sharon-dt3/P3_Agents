@@ -129,6 +129,25 @@ class GraphTeamsReader(TeamsReader):
         resp.raise_for_status()
         return resp.json().get("webUrl", "")
 
+    def note_known_message(self, message_id: str, channel_id: str) -> None:
+        """Seeds this reader's own _channel_id_by_message_id cache
+        directly, for a message this process already knows belongs to
+        channel_id (e.g. a root message read back from the local
+        `messages` table, ingested by a *different*, no-longer-alive
+        instance of this class in an earlier process tick) without
+        needing to call list_messages() again on this instance first.
+
+        2026-09-21 live finding (see DECISION_LOG.md): ScopedTeamsReader
+        gained a same-named method for its own, separate cache, but
+        this reader's cache is independent -- forwarding a known
+        message_id/channel_id pair to the gate alone left this class's
+        own cache empty, so list_replies() on a message ingested by an
+        earlier tick's now-discarded GraphTeamsReader still raised
+        KeyError here even after the gate let the call through.
+        ScopedTeamsReader.note_known_message() now forwards to this
+        method (duck-typed) precisely to close that gap."""
+        self._channel_id_by_message_id[message_id] = channel_id
+
     def _resolve_channel_id(self, message_id: str) -> str:
         channel_id = self._channel_id_by_message_id.get(message_id)
         if channel_id is None:

@@ -68,6 +68,7 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "spine" / "src"))
 
 from dotenv import load_dotenv
 
@@ -82,7 +83,7 @@ from p1.governance.scope_gate import ScopedTeamsReader
 from p1.ingestion.sync import sync_channel
 from p1.llm.gateway import LLMGateway
 from p1.participation.ledger import build_and_persist_ledger
-from p1.publishing.daily_job import JobResult, run_daily_digest_job
+from p1.publishing.daily_job import SKIPPED_NON_WORKING_DAY, JobResult, run_daily_digest_job
 from p1.storage.db import get_connection, init_db
 from p1.storage.messages_repo import MessageStore
 from p1.storage.sync_state import SyncStateStore
@@ -197,19 +198,21 @@ def run_live_pipeline(
     result = run_daily_digest_job(CHANNEL_ID, config, gateway, publisher, day=day, db_path=db_path)
     print(f"[run] {config.display_name} ({CHANNEL_ID}) {result.date}: {result.status} -- {result.detail}")
 
-    # Visibility only, not part of the scored production path: every real
-    # caller (daily_summary, nudge_job, escalation_job) deliberately reads
-    # the ledger fresh via build_ledger() rather than a persisted table, so
-    # a digest never reports a stale ledger (see daily_summary.py's own
-    # docstring). This script additionally persists the same day's ledger
-    # so the real participation table has a human-visible row to look at
-    # (e.g. via sqlite_web or the Supabase mirror) -- the digest and every
-    # downstream job's own behaviour never depend on this call or its
-    # result.
-    ledger_records = build_and_persist_ledger(CHANNEL_ID, date.fromisoformat(result.date), config, db_path=db_path)
-    print(f"Persisted {len(ledger_records)} participation ledger row(s) for {result.date} "
-          "(only non-responders are ever recorded -- see p1.participation.ledger's own docstring).")
-
+    if result.status == SKIPPED_NON_WORKING_DAY:
+        print(f"  (skipping ledger build -- {result.date} is not a working day for this channel)")
+    else:
+        # Visibility only, not part of the scored production path: every real
+        # caller (daily_summary, nudge_job, escalation_job) deliberately reads
+        # the ledger fresh via build_ledger() rather than a persisted table, so
+        # a digest never reports a stale ledger (see daily_summary.py's own
+        # docstring). This script additionally persists the same day's ledger
+        # so the real participation table has a human-visible row to look at
+        # (e.g. via sqlite_web or the Supabase mirror) -- the digest and every
+        # downstream job's own behaviour never depend on this call or its
+        # result.
+        ledger_records = build_and_persist_ledger(CHANNEL_ID, date.fromisoformat(result.date), config, db_path=db_path)
+        print(f"Persisted {len(ledger_records)} participation ledger row(s) for {result.date} "
+              "(only non-responders are ever recorded -- see p1.participation.ledger's own docstring).")
     return result
 
 

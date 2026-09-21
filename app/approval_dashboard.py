@@ -30,6 +30,16 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+# CHN-33 follow-up: p1.adapters.teams_publisher (and friends) now import
+# from the extracted spine package. This file's own sys.path.insert
+# above (predating CHN-33) only ever covered src/, so it relied
+# entirely on spine's site-packages .pth redirect -- which does not
+# reliably take effect under Streamlit's own script-execution model,
+# unlike plain `python`/`pytest`. Inserting packages/spine/src the same
+# explicit way makes spine importable here regardless of .pth timing,
+# mirroring the existing pattern rather than inventing a new one. See
+# DECISION_LOG.md, 2026-09-21 CHN-33 entry.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "spine" / "src"))
 
 import streamlit as st
 from dotenv import load_dotenv

@@ -2,9 +2,13 @@
 .DS_Store
 .venv/
 .env
+.env.bak*
 __pycache__/
 data/
 .pytest_cache/
 .ruff_cache/
 Claude outputs/
 outcomes/
+*.orig
+_tmp_*
+_cloud_test_tmp/

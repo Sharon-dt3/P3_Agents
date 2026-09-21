@@ -32,6 +32,7 @@ from pathlib import Path
 # plain `uv run python scripts/x.py` on this machine, so every script adds
 # src/ to sys.path itself rather than depending on it.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "spine" / "src"))
 
 from dotenv import load_dotenv
 

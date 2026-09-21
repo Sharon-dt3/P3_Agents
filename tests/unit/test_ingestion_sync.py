@@ -8,7 +8,7 @@ from p1.adapters.teams_reader import (
     TeamsMessage,
 )
 from p1.adapters.teams_reader_mock import MockTeamsReader
-from p1.ingestion.sync import sync_channel
+from p1.ingestion.sync import sync_channel, sync_channel_replies
 from p1.storage.db import get_connection, init_db
 from p1.storage.messages_repo import MessageStore
 from p1.storage.sync_state import SyncStateStore
@@ -186,3 +186,67 @@ def test_delta_link_rejected_stops_paging_without_persisting_the_broken_link(db_
     assert result.resynced is False
     # Nothing was ever known-good, so nothing (not the rejected link) is persisted.
     assert sync_state.get_delta_token("c1") is None
+
+
+def test_sync_channel_replies_fetches_and_upserts_replies_for_the_given_roots(db_path):
+    # Reproduces the real gap this function fixes: Graph's own
+    # /messages/delta (what sync_channel() calls) never returns thread
+    # replies -- only a separate, per-root list_replies() call does.
+    # MockTeamsReader.list_replies() scans every channel's messages for
+    # thread_root_id == the given id, so the reply just needs to exist
+    # in the reader's own fixture data, independent of whatever
+    # sync_channel() itself ingested.
+    message_store = MessageStore(db_path)
+    root = TeamsMessage(id="m1", channel_id="c1", author_id="u1", posted_at="2026-09-01T09:00:00Z", body="root")
+    reply = TeamsMessage(
+        id="m1-r1", channel_id="c1", author_id="u1", posted_at="2026-09-01T09:05:00Z",
+        body="a reply", thread_root_id="m1",
+    )
+    reader = _reader([root, reply])
+
+    count = sync_channel_replies(reader, "c1", ["m1"], message_store)
+
+    assert count == 1
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute("SELECT thread_root_id, body_raw FROM messages WHERE id = 'm1-r1'").fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["thread_root_id"] == "m1"
+    assert row["body_raw"] == "a reply"
+
+
+def test_sync_channel_replies_is_safe_to_rerun_for_the_same_roots(db_path):
+    # Every tick re-fetches replies for every known root (see
+    # live_runner_*.py's own _poll_ingest()) -- re-running this for the
+    # same root_message_ids must never duplicate rows or blow up,
+    # exactly like MessageStore.upsert_messages()'s own idempotent
+    # ON CONFLICT DO UPDATE guarantee.
+    message_store = MessageStore(db_path)
+    root = TeamsMessage(id="m1", channel_id="c1", author_id="u1", posted_at="2026-09-01T09:00:00Z", body="root")
+    reply = TeamsMessage(
+        id="m1-r1", channel_id="c1", author_id="u1", posted_at="2026-09-01T09:05:00Z",
+        body="a reply", thread_root_id="m1",
+    )
+    reader = _reader([root, reply])
+
+    sync_channel_replies(reader, "c1", ["m1"], message_store)
+    second_count = sync_channel_replies(reader, "c1", ["m1"], message_store)
+
+    assert second_count == 1
+    conn = get_connection(db_path)
+    try:
+        count = conn.execute("SELECT COUNT(*) AS n FROM messages WHERE id = 'm1-r1'").fetchone()["n"]
+    finally:
+        conn.close()
+    assert count == 1
+
+
+def test_sync_channel_replies_returns_zero_for_a_root_with_no_replies(db_path):
+    message_store = MessageStore(db_path)
+    root = TeamsMessage(id="m1", channel_id="c1", author_id="u1", posted_at="2026-09-01T09:00:00Z", body="root")
+    reader = _reader([root])
+
+    count = sync_channel_replies(reader, "c1", ["m1"], message_store)
+    assert count == 0

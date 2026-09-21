@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from p1.adapters.teams_reader import TeamsChannel, TeamsMessage
+from p1.adapters.teams_reader import MessagePage, TeamsChannel, TeamsMessage
 from p1.adapters.teams_reader_mock import MockTeamsReader
 from p1.governance.scope_gate import ScopedTeamsReader, ScopeViolationError
 from p1.storage.db import get_connection, init_db
@@ -150,3 +150,103 @@ def test_refusal_of_an_unseen_message_id_is_recorded_in_the_audit_table(db_path)
     assert entity_id == "m1"
     details = json.loads(details_json)
     assert details["operation"] == "list_replies"
+
+
+def test_note_known_message_lets_a_previously_unseen_message_id_through_for_an_allowlisted_channel(db_path):
+    # Simulates the real case this method exists for: a fresh gate
+    # instance (a new process tick) that never itself called
+    # list_messages()/list_replies() for "m1", re-asserting it as
+    # already-known, already-allowlisted data (e.g. read back from
+    # `messages`) rather than fetching it again.
+    gate = ScopedTeamsReader(_reader(), allowlisted_channel_ids=["allowed-1"], db_path=db_path)
+    gate.note_known_message("m1", "allowed-1")
+    assert gate.list_replies("m1") == []
+    gate.get_permalink("m1")  # does not raise
+
+
+def test_note_known_message_still_refuses_a_non_allowlisted_channel(db_path):
+    # The whole point: this method must never be usable to smuggle an
+    # out-of-scope channel_id past the allowlist -- it still runs
+    # through _enforce() exactly like every other operation here.
+    gate = ScopedTeamsReader(_reader(), allowlisted_channel_ids=["allowed-1"], db_path=db_path)
+    with pytest.raises(ScopeViolationError):
+        gate.note_known_message("m2", "not-allowed-1")
+    # And since the enforce failed, "m2" must never have been recorded
+    # as known either -- list_replies must still refuse it too.
+    with pytest.raises(ScopeViolationError):
+        gate.list_replies("m2")
+
+
+def test_note_known_message_refusal_is_recorded_in_the_audit_table(db_path):
+    gate = ScopedTeamsReader(_reader(), allowlisted_channel_ids=["allowed-1"], db_path=db_path)
+    with pytest.raises(ScopeViolationError):
+        gate.note_known_message("m2", "not-allowed-1")
+
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT actor, action, entity_type, entity_id, details FROM audit"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    actor, action, entity_type, entity_id, details_json = row
+    assert actor == "scope_gate"
+    assert action == "refuse_read"
+    assert entity_type == "channel"
+    assert entity_id == "not-allowed-1"
+    details = json.loads(details_json)
+    assert details["operation"] == "note_known_message"
+
+
+class _ReaderWithNoteKnownMessage:
+    """A minimal fake reader exposing note_known_message(), to prove
+    ScopedTeamsReader.note_known_message() forwards to it when present.
+    The real case this stands in for is GraphTeamsReader's own separate
+    message_id->channel_id cache (see teams_reader_graph.py's own
+    docstring and this fix's 2026-09-21 DECISION_LOG.md entry) -- but
+    nothing here needs a real Graph reader to prove the forwarding
+    itself happens, just something that duck-types the same method."""
+
+    def __init__(self):
+        self.noted: list[tuple[str, str]] = []
+
+    def list_channels(self):
+        return [TeamsChannel(id="allowed-1", display_name="Allowed Channel")]
+
+    def list_channel_members(self, channel_id):
+        return []
+
+    def list_messages(self, channel_id, since=None, delta_token=None):
+        return MessagePage(messages=[], delta_token="", has_more=False)
+
+    def list_replies(self, message_id):
+        return []
+
+    def get_permalink(self, message_id):
+        return ""
+
+    def note_known_message(self, message_id, channel_id):
+        self.noted.append((message_id, channel_id))
+
+
+def test_note_known_message_forwards_to_a_wrapped_reader_that_also_exposes_it(db_path):
+    # 2026-09-21 live finding: seeding only the gate's own cache was not
+    # enough -- GraphTeamsReader keeps an entirely separate cache that
+    # list_replies() actually resolves channel_id from once the call is
+    # delegated to the wrapped reader, so without this forwarding a
+    # message the gate now considers known still made the wrapped
+    # reader's own list_replies() raise KeyError. See DECISION_LOG.md.
+    wrapped = _ReaderWithNoteKnownMessage()
+    gate = ScopedTeamsReader(wrapped, allowlisted_channel_ids=["allowed-1"], db_path=db_path)
+    gate.note_known_message("m1", "allowed-1")
+    assert wrapped.noted == [("m1", "allowed-1")]
+
+
+def test_note_known_message_does_not_forward_to_a_wrapped_reader_without_it(db_path):
+    # MockTeamsReader has no note_known_message -- it doesn't need one,
+    # since its own list_replies() scans every channel's messages
+    # directly rather than resolving via a cache. Must not raise.
+    gate = ScopedTeamsReader(_reader(), allowlisted_channel_ids=["allowed-1"], db_path=db_path)
+    gate.note_known_message("m1", "allowed-1")  # does not raise

@@ -69,6 +69,51 @@ def sync_all_allowlisted_channels(
     ]
 
 
+def sync_channel_replies(
+    reader: TeamsReader,
+    channel_id: str,
+    root_message_ids: Iterable[str],
+    message_store: MessageStore,
+) -> int:
+    """Fetches and upserts thread replies for a given set of root
+    message ids. Exists because Graph's own /messages/delta endpoint
+    (the only thing sync_channel()/_drain_pages() ever calls) never
+    returns thread replies -- only top-level root messages; a reply
+    only ever surfaces via a separate, per-root GET
+    .../messages/{id}/replies call (TeamsReader.list_replies()), which
+    nothing in the live ingestion path called before this. See
+    DECISION_LOG.md's thread-replies-ingestion entry for the full
+    finding.
+
+    reader-agnostic by design, exactly like sync_channel() -- works
+    identically whether reader is a MockTeamsReader, a raw
+    GraphTeamsReader, or a ScopedTeamsReader. Nothing here is specific
+    to ScopedTeamsReader; a caller using ScopedTeamsReader with
+    root_message_ids gathered from an *earlier* process tick (not this
+    same reader instance's own list_messages() calls) must first call
+    that gate's own note_known_message() for each id before calling
+    this function, or the gate will correctly refuse them -- that call
+    happens in the live_runner scripts, not here, to keep this function
+    itself reader-agnostic (Liskov substitution: it must work
+    identically for any TeamsReader, not assume gate-specific methods).
+
+    message_store.upsert_messages() is an idempotent
+    INSERT ... ON CONFLICT DO UPDATE (see MessageStore's own docstring),
+    so re-fetching and re-upserting the same root's replies on every
+    tick is always safe, just potentially redundant Graph calls -- no
+    attempt is made here to track "already have this root's replies"
+    across ticks; channel_id itself is not otherwise used, since
+    list_replies() takes only a message_id, but is kept as an explicit
+    parameter to mirror sync_channel()'s own signature and because a
+    future caller may want it for logging."""
+    count = 0
+    for root_id in root_message_ids:
+        replies = reader.list_replies(root_id)
+        message_store.upsert_messages(replies)
+        count += len(replies)
+    return count
+
+
 def _drain_pages(
     reader: TeamsReader,
     channel_id: str,

@@ -477,3 +477,39 @@ def test_evidence_bundle_contains_dates_window_and_per_day_state(db_path):
     assert WED.isoformat() in content
     assert "dave-tue" in content
     assert "09:00-11:00 UTC" in content
+
+
+# --- the message names the person by their real display name, not their raw id -
+
+
+def test_escalation_message_uses_the_members_display_name_not_the_raw_member_id(db_path):
+    # 2026-09-21 fix (see DECISION_LOG.md): _render_escalation_message()
+    # used to interpolate member_id directly -- this file's own db_path
+    # fixture seeds every member with display_name == member_id, which
+    # made that bug invisible to every other test above (the assertions
+    # like "dave" in content pass either way). Here dave's real name is
+    # set to something that does NOT equal his member_id, so only a
+    # genuine members-table lookup can make this pass.
+    config = _config()
+    conn = get_connection(db_path)
+    try:
+        conn.execute("UPDATE members SET display_name = ? WHERE id = 'dave'", ("Dave Realname",))
+        conn.commit()
+    finally:
+        conn.close()
+    _seed_previously_nudged(db_path, "esc-channel", "dave")
+    _seed_anchor(db_path, "dave")
+    _seed_contributes(db_path, "alice", MON, "m")
+    _seed_contributes(db_path, "alice", TUE, "m")
+    _seed_contributes(db_path, "alice", WED, "m")
+    publisher = _RecordingPublisher()
+
+    run_escalation_job(config.channel_id, config, publisher, day=WED, db_path=db_path)
+    proposal_store = ProposalStore(db_path)
+    proposal = proposal_store.get_by_idempotency_key(f"esc-channel:dave:{MON.isoformat()}")
+    proposal_store.approve(proposal.id, approver_id="priya")
+    run_escalation_job(config.channel_id, config, publisher, day=WED, db_path=db_path)
+
+    content = publisher.calls[0][1]
+    assert content.startswith("Hi! Dave Realname has missed")
+    assert "Dave Realname" in content

@@ -117,6 +117,33 @@ def test_list_messages_unrelated_400_still_raises_http_status_error():
         reader.list_messages("c1", delta_token="https://x/delta?$skiptoken=abc")
 
 
+def test_list_replies_raises_key_error_for_a_message_never_seen_by_this_instance():
+    # The exact failure this class's own _resolve_channel_id has always
+    # raised for -- reproduced here directly, without ScopeGate, to
+    # isolate that this reader's cache really is independent of any
+    # caller. See note_known_message()'s own docstring for why a fresh
+    # instance (e.g. a new process tick) starts with this cache empty
+    # even for a message_id it "should" already know.
+    reader = _reader_with_transport(lambda request: httpx.Response(200, json={"value": []}))
+    with pytest.raises(KeyError):
+        reader.list_replies("m1")
+
+
+def test_note_known_message_lets_list_replies_resolve_without_calling_list_messages_first():
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, json={"value": []})
+
+    reader = _reader_with_transport(handler)
+    reader.note_known_message("m1", "c1")
+
+    reader.list_replies("m1")  # does not raise
+
+    assert calls == ["https://graph.microsoft.com/v1.0/teams/team-1/channels/c1/messages/m1/replies"]
+
+
 def test_parse_message_flags_system_message():
     def handler(request):
         return httpx.Response(

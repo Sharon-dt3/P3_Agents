@@ -4,6 +4,8 @@ allowlisted: true
 
 roster:
   - "a52e61e5-16c6-4f6c-af67-f41f85e7a00a"  # Sharon Silva (SharonS@digitalt3.com) -- Graph reports author_id as the AAD object id, not the email; see DECISION_LOG.md CHN-25
+  - "230d27f7-dd11-407c-8822-8947f0068611"  # Himanshu Ranjan -- added 2026-09-21 after the thread-replies ingestion fix (see DECISION_LOG.md); auto-registered display_name is a placeholder (the AAD id itself) until ChannelMember.Read.All is granted, see CHN-01 follow-ups
+  - "442e9b43-e50a-446c-9c4b-e612e9036bd8"  # Esandu Obadaarachchi -- added 2026-09-21, same as above
 
 update_window_start: "08:00:00"  # TEMPORARY -- reopened to 08:00 so a message posted this morning counts, revert to 08:00:00 (already standard) after, see chat
 update_window_end: "17:30:00"  # matches daily_digest_time -- updates must land before the digest is generated

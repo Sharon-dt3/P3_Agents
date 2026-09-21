@@ -109,3 +109,61 @@ def test_an_already_known_member_is_never_overwritten(tmp_path):
     finally:
         conn.close()
     assert row["display_name"] == "Sharon Silva"
+
+
+def test_list_root_message_ids_returns_only_non_reply_non_deleted_messages(tmp_path):
+    # The exact set MessageStore.list_root_message_ids() exists to
+    # produce: a caller (live_runner_*.py's _poll_ingest(), via
+    # ingestion.sync.sync_channel_replies()) needs every root this
+    # channel has -- a reply itself is never a valid root to fetch
+    # replies-of, and a deleted root's thread is no longer worth
+    # re-polling every tick. See DECISION_LOG.md's
+    # thread-replies-ingestion entry.
+    db_path = _bare_db(tmp_path)
+    message_store = MessageStore(db_path)
+
+    root_message = TeamsMessage(
+        id="m1", channel_id="c1", author_id="u1",
+        posted_at="2026-09-18T09:00:00Z", body="root",
+    )
+    reply_message = TeamsMessage(
+        id="m1-r1", channel_id="c1", author_id="u2",
+        posted_at="2026-09-18T09:05:00Z", body="a reply", thread_root_id="m1",
+    )
+    deleted_root = TeamsMessage(
+        id="m2", channel_id="c1", author_id="u1",
+        posted_at="2026-09-18T09:10:00Z", body="deleted root", is_deleted=True,
+    )
+    message_store.upsert_messages([root_message, reply_message, deleted_root])
+
+    root_ids = message_store.list_root_message_ids("c1")
+
+    assert root_ids == ["m1"]
+
+
+def test_list_root_message_ids_is_scoped_to_its_own_channel(tmp_path):
+    db_path = _bare_db(tmp_path)
+    conn = get_connection(db_path)
+    conn.execute("INSERT INTO channels (id, display_name, allowlisted) VALUES ('c2', 'Channel Two', 1)")
+    conn.commit()
+    conn.close()
+
+    message_store = MessageStore(db_path)
+    message_store.upsert_messages([
+        TeamsMessage(id="m1", channel_id="c1", author_id="u1", posted_at="2026-09-18T09:00:00Z", body="c1 root"),
+        TeamsMessage(id="m2", channel_id="c2", author_id="u1", posted_at="2026-09-18T09:00:00Z", body="c2 root"),
+    ])
+
+    assert message_store.list_root_message_ids("c1") == ["m1"]
+    assert message_store.list_root_message_ids("c2") == ["m2"]
+
+
+def test_list_root_message_ids_honours_the_since_lower_bound(tmp_path):
+    db_path = _bare_db(tmp_path)
+    message_store = MessageStore(db_path)
+    message_store.upsert_messages([
+        TeamsMessage(id="early", channel_id="c1", author_id="u1", posted_at="2026-09-01T00:00:00Z", body="old"),
+        TeamsMessage(id="late", channel_id="c1", author_id="u1", posted_at="2026-09-18T00:00:00Z", body="new"),
+    ])
+
+    assert message_store.list_root_message_ids("c1", since="2026-09-10T00:00:00Z") == ["late"]

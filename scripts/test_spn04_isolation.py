@@ -27,6 +27,7 @@ from datetime import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "spine" / "src"))
 
 from p1.config.loader import ChannelConfigStore  # noqa: E402
 from p1.storage.db import get_connection  # noqa: E402
