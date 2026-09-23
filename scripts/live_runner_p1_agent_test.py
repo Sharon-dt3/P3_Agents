@@ -339,6 +339,9 @@ def main() -> int:
         ),
         id=f"nudge_escalation:{CHANNEL_ID}",
         kwargs={"publisher": publisher, "db_path": LIVE_DB_PATH},
+        # Same reasoning as spine.scheduling.scheduler.build_scheduler's own
+        # digest job -- see DECISION_LOG.md, 2026-09-23.
+        misfire_grace_time=6 * 3600,
     )
 
     scheduler.start()

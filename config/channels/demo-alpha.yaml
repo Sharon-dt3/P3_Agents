@@ -1,0 +1,34 @@
+channel_id: "19:cjXUoeQ-LwPPkGYen8aHJa7atEdh9krnVo-urM6Gkxs1@thread.tacv2"
+display_name: "AI Agent - Delivery Standup"
+allowlisted: true
+
+roster:
+  - "a52e61e5-16c6-4f6c-af67-f41f85e7a00a"  # Sharon Silva (SharonS@digitalt3.com) -- the contributor: posts real updates during the demo, drives the daily summary + permalink beat
+  - "230d27f7-dd11-407c-8822-8947f0068611"  # Himanshu Ranjan -- posts something that doesn't count as an update (posted_no_update), and is the person whose nudge gets REJECTED live
+  - "442e9b43-e50a-446c-9c4b-e612e9036bd8"  # Esandu Obadaarachchi -- stays silent (no_message); nudge gets APPROVED live, and this is the person whose streak becomes the escalation evidence bundle once enough consecutive missed days have passed
+  - "00000000-0000-0000-0000-000000000001"  # synthetic placeholder -- never posts, exists only to demonstrate the EXCLUDED ledger state via the exceptions entry below
+
+update_window_start: "09:00:00"
+update_window_end: "17:00:00"  # widen or narrow this around your actual demo time the same way p1-agent-test.yaml's history shows (see its .orig backup) -- a message posted outside this window is rule-excluded, not counted
+timezone: "Asia/Colombo"
+working_days: ["Mon", "Tue", "Wed", "Thu", "Fri"]
+non_working_dates: []
+
+length_floor: 10
+count_thread_replies: true
+ignore_bots: true
+
+daily_digest_time: "17:30:00"
+weekly_digest_day: "Fri"
+weekly_digest_time: "16:00:00"
+
+nudge_enabled: true
+nudge_cap_per_day: 1
+escalation_threshold_days: 3
+channel_owner_id: "SharonS@digitalt3.com"
+
+exceptions:
+  - member_id: "00000000-0000-0000-0000-000000000001"
+    reason: "On leave - demo placeholder"
+
+version: 1

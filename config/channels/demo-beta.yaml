@@ -1,0 +1,29 @@
+channel_id: "19:onXXPocFXdrTt8Krz3p2GnNrpNo9p1HBHXQxzFsWOmk1@thread.tacv2"
+display_name: "AI Agent — Platform Standup"
+allowlisted: true
+
+roster:
+  - "a52e61e5-16c6-4f6c-af67-f41f85e7a00a"  # Sharon Silva (SharonS@digitalt3.com) -- reused deliberately for the second-channel isolation test, same pattern teams-agent-test.yaml already uses
+
+update_window_start: "09:00:00"
+update_window_end: "17:00:00"
+timezone: "Asia/Colombo"
+working_days: ["Mon", "Tue", "Wed", "Thu", "Fri"]
+non_working_dates: []
+
+length_floor: 10
+count_thread_replies: true
+ignore_bots: true
+
+daily_digest_time: "17:30:00"
+weekly_digest_day: "Fri"
+weekly_digest_time: "16:00:00"
+
+nudge_enabled: false  # deliberately off here, on for demo-alpha -- the two channels showing different config is itself part of the "per-channel config" story
+nudge_cap_per_day: 1
+escalation_threshold_days: 3
+channel_owner_id: "SharonS@digitalt3.com"
+
+exceptions: []
+
+version: 1

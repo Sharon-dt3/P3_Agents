@@ -48,6 +48,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from p1.adapters.graph_auth import GraphAuthError, get_access_token
 from p1.adapters.teams_reader_graph import GraphTeamsReader
 from p1.config.loader import ChannelConfigStore
 from p1.governance.scope_gate import ScopedTeamsReader
@@ -112,12 +113,23 @@ def run_live_ingest(
 
 
 def main() -> int:
-    access_token = os.environ.get("GRAPH_ACCESS_TOKEN")
+    tenant_id = os.environ.get("AZURE_TENANT_ID")
+    client_id = os.environ.get("AZURE_CLIENT_ID")
     team_id = os.environ.get("GRAPH_TEAM_ID")
-    if not access_token or not team_id:
-        print("GRAPH_ACCESS_TOKEN and GRAPH_TEAM_ID must both be set in .env -- run "
-              "scripts/graph_login.py first.")
+    if not tenant_id or not client_id or not team_id:
+        print("AZURE_TENANT_ID, AZURE_CLIENT_ID, and GRAPH_TEAM_ID must all be set in .env.")
         return 1
+
+    # Refreshed silently from the MSAL token cache -- a static
+    # GRAPH_ACCESS_TOKEN from .env is only valid ~75 minutes and produces
+    # a 401 on any run after that. See run_live_pipeline_p1_agent_test.py
+    # for the same fix and its full rationale.
+    try:
+        access_token = get_access_token(tenant_id=tenant_id, client_id=client_id, allow_interactive=False)
+    except GraphAuthError as exc:
+        print(f"Graph auth failed -- {exc}")
+        return 1
+
     return run_live_ingest(access_token=access_token, team_id=team_id)
 
 

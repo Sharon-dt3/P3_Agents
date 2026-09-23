@@ -38,6 +38,12 @@ P1_AGENT_TEST = "19:ZVl0BYQCKWi4_oXsG_tuu3F4p5HsgQGobGhAMiZD_ro1@thread.tacv2"
 # -- this repo now has 4 real allowlisted channels, not 3, same reasoning
 # as P1_AGENT_TEST's own comment above.
 TEAMS_AGENT_TEST = "19:ID3C8qqqxb40IRhNJ3xvts2BWAgRac3SxYwm9XyBEGM1@thread.tacv2"
+# Added 2026-09-23 alongside the two live-demo channels
+# (config/channels/demo-alpha.yaml, demo-beta.yaml) -- this repo now has
+# 6 real allowlisted channels, not 4, same reasoning as P1_AGENT_TEST's
+# own comment above.
+DEMO_ALPHA = "19:cjXUoeQ-LwPPkGYen8aHJa7atEdh9krnVo-urM6Gkxs1@thread.tacv2"
+DEMO_BETA = "19:onXXPocFXdrTt8Krz3p2GnNrpNo9p1HBHXQxzFsWOmk1@thread.tacv2"
 
 # CHN-09's classifier tool name (src/p1/detection/classifier.py) vs.
 # CHN-13's daily-summary-section tool name (src/p1/reporting/daily_summary.py)
@@ -80,7 +86,7 @@ def test_run_full_flow_runs_all_allowlisted_channels_end_to_end(tmp_path):
     )
 
     channel_ids = {r.channel_id for r in results}
-    assert channel_ids == {ALPHA, BETA, P1_AGENT_TEST, TEAMS_AGENT_TEST}, "gamma is not allowlisted and must never appear here"
+    assert channel_ids == {ALPHA, BETA, P1_AGENT_TEST, TEAMS_AGENT_TEST, DEMO_ALPHA, DEMO_BETA}, "gamma is not allowlisted and must never appear here"
     assert all(r.date == run_daily.DEMO_DAY.isoformat() for r in results)
 
     # A brand-new DB's very first publish for each channel is always left
@@ -120,7 +126,7 @@ def test_run_full_flow_auto_approves_and_publishes_on_a_later_day(tmp_path):
     from p1.approval.proposals import ProposalStore
 
     store = ProposalStore(db_path)
-    for channel_id in (ALPHA, BETA, P1_AGENT_TEST, TEAMS_AGENT_TEST):
+    for channel_id in (ALPHA, BETA, P1_AGENT_TEST, TEAMS_AGENT_TEST, DEMO_ALPHA, DEMO_BETA):
         key = f"{channel_id}:{run_daily.DEMO_DAY.isoformat()}:daily_publish"
         proposal = store.get_by_idempotency_key(key)
         store.approve(proposal.id, approver_id="test:human")
@@ -133,9 +139,9 @@ def test_run_full_flow_auto_approves_and_publishes_on_a_later_day(tmp_path):
     )
     assert {r.status for r in first_day_rerun} == {"published"}
     assert log_path.exists()
-    assert len(log_path.read_text().strip().splitlines()) == 4  # one per channel
+    assert len(log_path.read_text().strip().splitlines()) == 6  # one per channel
 
-    # NOW has_ever_published() is true for all four channels, so the
+    # NOW has_ever_published() is true for all six channels, so the
     # next working day auto-approves and sends with no human step at all.
     later_day = run_daily.date(2025, 6, 12)
     second_day_results = run_daily.run_full_flow(
@@ -144,4 +150,4 @@ def test_run_full_flow_auto_approves_and_publishes_on_a_later_day(tmp_path):
     )
     assert {r.status for r in second_day_results} == {"published"}
     logged = log_path.read_text().strip().splitlines()
-    assert len(logged) == 8  # 4 from the first day's rerun + 4 more here
+    assert len(logged) == 12  # 6 from the first day's rerun + 6 more here

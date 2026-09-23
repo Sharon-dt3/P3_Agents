@@ -75,6 +75,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from p1.adapters.factory import get_teams_publisher
+from p1.adapters.graph_auth import GraphAuthError, get_access_token
 from p1.adapters.teams_reader import TeamsMessage
 from p1.adapters.teams_reader_graph import GraphTeamsReader
 from p1.config.loader import ChannelConfigStore
@@ -229,10 +230,24 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    access_token = os.environ.get("GRAPH_ACCESS_TOKEN")
+    tenant_id = os.environ.get("AZURE_TENANT_ID")
+    client_id = os.environ.get("AZURE_CLIENT_ID")
     team_id = os.environ.get("GRAPH_TEAM_ID")
-    if not access_token or not team_id:
-        print("GRAPH_ACCESS_TOKEN and GRAPH_TEAM_ID must both be set in .env -- run scripts/graph_login.py first.")
+    if not tenant_id or not client_id or not team_id:
+        print("AZURE_TENANT_ID, AZURE_CLIENT_ID, and GRAPH_TEAM_ID must all be set in .env.")
+        return 1
+
+    # Refreshed silently from the MSAL token cache on every run, same as
+    # live_runner_p1_agent_test.py's own _poll_ingest -- a Graph access
+    # token is only valid for ~75 minutes, so reading a static
+    # GRAPH_ACCESS_TOKEN out of .env (the previous behaviour here) only
+    # worked immediately after scripts/graph_login.py and produced a 401
+    # on any later run. allow_interactive=False: this is a one-shot
+    # script, not somewhere to block on a device-code prompt.
+    try:
+        access_token = get_access_token(tenant_id=tenant_id, client_id=client_id, allow_interactive=False)
+    except GraphAuthError as exc:
+        print(f"Graph auth failed -- {exc}")
         return 1
 
     result = run_live_pipeline(access_token=access_token, team_id=team_id, day=_parse_day(args.day))

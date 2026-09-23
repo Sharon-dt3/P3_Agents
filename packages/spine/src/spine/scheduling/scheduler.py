@@ -134,5 +134,11 @@ def build_scheduler(
             trigger=trigger,
             id=spec.job_id,
             kwargs=job_kwargs(config),
+            # APScheduler's own default is 1 second -- a laptop sleeping or a
+            # brief network stall past the exact fire time silently skips the
+            # whole day's job rather than running it late (see DECISION_LOG.md,
+            # 2026-09-23, the missed p1-agent-test digest). 6h tolerates a
+            # laptop being asleep overnight-ish without giving up entirely.
+            misfire_grace_time=6 * 3600,
         )
     return scheduler

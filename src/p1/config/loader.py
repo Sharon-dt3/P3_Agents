@@ -19,10 +19,17 @@ Streamlit fallback (app/approval_dashboard.py) call
 update_channel_config() directly and identically; neither one ever
 touches the channel_config table itself.
 
-The committed YAML remains the system of record in the sense that a
-fresh sync_to_db() (redeploy) resets every field, including these
-three, back to what is checked in -- a live edit is a running
-override, not a fork of the source of truth.
+2026-09-23: sync_to_db() no longer resets those owner-editable fields
+for a channel that already has a row. It used to, and run_daily.py plus
+every live runner call sync_to_db() on every run, so a channel owner's
+roster/window/exceptions edit only lasted until the next job and then
+silently reverted to YAML (the 2026-09-23 06:09 sync did exactly this
+to all seven live rows). YAML now seeds those fields for a NEW channel
+only; after that the live DB row (fed by the two surfaces above and,
+once the table exists, scripts/sync_from_dataverse.py) owns them.
+Every other field is still committed-YAML-only and still re-applied on
+every sync. sync_to_db(reset_owner_fields=True) is the explicit,
+audited way to force YAML to win -- see DECISION_LOG.md.
 """
 
 from __future__ import annotations
@@ -37,6 +44,11 @@ from p1.config.schema import ChannelConfig, ExceptionEntry
 from p1.storage.db import DEFAULT_DB_PATH, get_connection
 
 DEFAULT_CONFIG_DIR = Path("config/channels")
+
+# The fields update_channel_config() lets a channel owner change without
+# a deploy. sync_to_db() only seeds these; it never overwrites a live
+# value unless reset_owner_fields=True.
+OWNER_EDITABLE_FIELDS = ("roster", "update_window_start", "update_window_end", "exceptions")
 
 
 class ChannelConfigStore:
@@ -213,8 +225,15 @@ class ChannelConfigStore:
         except Exception as exc:
             raise ValueError(f"Invalid channel config in {path}: {exc}") from exc
 
-    def sync_to_db(self, db_path: str | Path = DEFAULT_DB_PATH) -> int:
-        """Upsert every loaded config into channels + channel_config."""
+    def sync_to_db(self, db_path: str | Path = DEFAULT_DB_PATH, *, reset_owner_fields: bool = False) -> int:
+        """Upsert every loaded config into channels + channel_config.
+
+        A new channel gets every field from YAML. An existing channel
+        gets every YAML-only field re-applied, but keeps its live
+        OWNER_EDITABLE_FIELDS and version untouched -- unless
+        reset_owner_fields=True, which overwrites them from YAML, bumps
+        version, and writes one audit row per channel so the reset is
+        as visible as the edit it discarded."""
         configs = self.list_configured_channels()
         conn = get_connection(db_path)
         try:
@@ -257,7 +276,15 @@ class ChannelConfigStore:
                 }
                 columns = ", ".join(values)
                 placeholders = ", ".join(f":{k}" for k in values)
-                update_clause = ", ".join(f"{k} = excluded.{k}" for k in values if k != "channel_id")
+                protected = {"channel_id", "version"}
+                if not reset_owner_fields:
+                    protected.update(OWNER_EDITABLE_FIELDS)
+                update_clause = ", ".join(f"{k} = excluded.{k}" for k in values if k not in protected)
+                if reset_owner_fields:
+                    update_clause += ", version = channel_config.version + 1"
+                existed = conn.execute(
+                    "SELECT 1 FROM channel_config WHERE channel_id = ?", (config.channel_id,)
+                ).fetchone() is not None
                 conn.execute(
                     f"""
                     INSERT INTO channel_config ({columns})
@@ -268,6 +295,17 @@ class ChannelConfigStore:
                     """,
                     values,
                 )
+                if reset_owner_fields and existed:
+                    conn.execute(
+                        "INSERT INTO audit (actor, action, entity_type, entity_id, details) VALUES (?, ?, ?, ?, ?)",
+                        (
+                            "sync_to_db",
+                            "channel_config.reset_from_yaml",
+                            "channel_config",
+                            config.channel_id,
+                            json.dumps({"fields": list(OWNER_EDITABLE_FIELDS)}),
+                        ),
+                    )
             conn.commit()
             return len(configs)
         finally:

@@ -95,3 +95,66 @@ def test_sync_to_db_upserts_channel_and_config(tmp_path):
 
     assert json.loads(row["roster"]) == ["priya", "james", "wei"]
     assert row["channel_owner_id"] == "priya"
+
+
+def _synced_store(tmp_path, data=ALPHA):
+    config_dir = tmp_path / "channels"
+    config_dir.mkdir()
+    _write_config(config_dir, data)
+    db_path = tmp_path / "test.db"
+    run_migrations(db_path)
+    store = ChannelConfigStore(config_dir)
+    store.sync_to_db(db_path)
+    return store, config_dir, db_path
+
+
+def test_resync_keeps_a_live_owner_edit(tmp_path):
+    """Regression (2026-09-23): run_daily.py re-syncs YAML on every run,
+    which used to silently revert a channel owner's live roster and
+    exceptions edits -- e.g. putting someone on leave, then seeing them
+    reported as a non-responder again the next morning."""
+    store, _, db_path = _synced_store(tmp_path)
+    store.update_channel_config(
+        "chn-alpha",
+        roster=["priya", "james", "wei", "carol"],
+        exceptions=[{"member_id": "wei", "reason": "leave"}],
+        updated_by="priya",
+        db_path=db_path,
+    )
+
+    store.sync_to_db(db_path)
+
+    effective = store.get_effective_config("chn-alpha", db_path=db_path)
+    assert effective.roster == ["priya", "james", "wei", "carol"]
+    assert [e.member_id for e in effective.exceptions] == ["wei"]
+    assert effective.version == 2
+
+
+def test_resync_still_applies_yaml_only_fields(tmp_path):
+    store, config_dir, db_path = _synced_store(tmp_path)
+    store.update_channel_config("chn-alpha", roster=["priya", "carol"], updated_by="priya", db_path=db_path)
+    _write_config(config_dir, dict(ALPHA, nudge_enabled=True, daily_digest_time="12:00:00"))
+
+    store.sync_to_db(db_path)
+
+    effective = store.get_effective_config("chn-alpha", db_path=db_path)
+    assert effective.nudge_enabled is True
+    assert effective.daily_digest_time.isoformat() == "12:00:00"
+    assert effective.roster == ["priya", "carol"]
+
+
+def test_reset_owner_fields_restores_yaml_and_is_audited(tmp_path):
+    store, _, db_path = _synced_store(tmp_path)
+    store.update_channel_config("chn-alpha", roster=["priya", "carol"], updated_by="priya", db_path=db_path)
+
+    store.sync_to_db(db_path, reset_owner_fields=True)
+
+    effective = store.get_effective_config("chn-alpha", db_path=db_path)
+    assert effective.roster == ["priya", "james", "wei"]
+    assert effective.version == 3
+    conn = get_connection(db_path)
+    actions = [r["action"] for r in conn.execute(
+        "SELECT action FROM audit WHERE entity_id = ? ORDER BY id", ("chn-alpha",)
+    )]
+    conn.close()
+    assert actions == ["channel_config.updated", "channel_config.reset_from_yaml"]
