@@ -59,6 +59,8 @@ from p1.approval.write_guard import WriteRefusedError, guarded_send
 from p1.config.loader import ChannelConfigStore
 from p1.storage.db import DEFAULT_DB_PATH, get_connection
 from p1.storage.digests_repo import DigestStore
+from p1.storage.escalations_repo import EscalationStore
+from p1.storage.nudges_repo import NudgeStore
 
 
 @dataclass(frozen=True)
@@ -200,6 +202,19 @@ def approve_and_send(
             idempotency_key=f"{proposal.payload['channel_id']}:{proposal.payload['date']}:daily",
             published_at=datetime.now(timezone.utc).isoformat(),
         )
+
+    # A nudge/escalation a HUMAN approves is sent through this function, not the job
+    # that created it -- so the job's own mark_sent() never runs. Without recording
+    # the send here, "has this person ever been nudged/escalated?" stays False
+    # forever: the spec's "first one needs approval, thereafter unattended" never
+    # engages (every later nudge is held again) and escalation, which requires a
+    # prior sent nudge, can never fire. Same class of bug as the digest's
+    # mark_published() fix above (2026-09-19); found 2026-09-24.
+    sent_at = datetime.now(timezone.utc).isoformat()
+    if proposal.type == "nudge":
+        NudgeStore(db_path).mark_sent(idempotency_key=proposal.idempotency_key, sent_at=sent_at)
+    elif proposal.type == "escalation":
+        EscalationStore(db_path).mark_sent(idempotency_key=proposal.idempotency_key, sent_at=sent_at)
 
     return ActionResult(proposal_id, "sent", "sent")
 

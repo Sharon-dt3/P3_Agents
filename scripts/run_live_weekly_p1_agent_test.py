@@ -4,16 +4,16 @@ pointed at the real channel and the real Power Automate publisher.
 
 Use it for the two things the once-a-week scheduler cannot do on its own:
 
-  1. SEND THE FIRST ONE AFTER APPROVAL. The first weekly roll-up ever sent
-     to a channel is held for a human (a weekly roll-up is a new kind of
-     post for the channel). Run this once to create the pending proposal
-     (nothing is sent -- expect status "awaiting_approval"), approve it
-     (scripts/approve_cli.py or the approval dashboard), then run this
-     again: it finds the approved proposal and sends it, exactly once.
+  1. SEND A HELD ONE AFTER APPROVAL. Only a channel's very first publish
+     ever waits for a human (spec, CHN-17); a channel that has already
+     published a digest posts its weekly roll-up on its own. If this
+     channel has never published anything, run this once to create the
+     pending proposal (nothing is sent -- expect "awaiting_approval"),
+     approve it (scripts/approve_cli.py or the approval dashboard), then
+     run this again: it sends it, exactly once.
   2. RETRY a failed run (e.g. a model timeout logged as "[weekly] FAILED").
 
-Idempotent: safe to run any number of times for the same week. Once a
-channel has had one weekly roll-up published, later weeks send unattended.
+Idempotent: safe to run any number of times for the same week.
 
 WARNING: once a proposal for the week is approved, running this posts to
 the real Teams channel. Before that it only creates/refreshes the pending

@@ -310,3 +310,61 @@ def test_list_pending_approvals_excludes_decided_proposals(tmp_path):
 
     pending_ids = {p.proposal_id for p in service.list_pending_approvals(db_path=db_path)}
     assert pending_ids == {p1.id}
+
+
+# --- an approved nudge/escalation must count as SENT (2026-09-24) -----------------------
+
+def test_a_human_approved_nudge_is_recorded_as_sent_so_the_first_nudge_gate_lifts(tmp_path):
+    """Spec (CHN-21): the first nudge to a person needs approval; thereafter it runs
+    unattended. That depends on NudgeStore.has_ever_been_nudged(), which reads sent_at
+    -- which approve_and_send used never to write."""
+    db_path = tmp_path / "test.db"
+    _seed_db(db_path)
+    _seed_message(db_path, "alice-mon", "alice", MON)  # alice contributed, so only bob is nudged
+    publisher = _RecordingPublisher()
+    run_nudge_job(CHANNEL_ID, _config(), publisher, day=MON, db_path=db_path)
+    pending = service.list_pending_approvals(db_path=db_path)
+    assert [p.payload["member_id"] for p in pending] == ["bob"]
+    proposal_id = pending[0].proposal_id
+    assert NudgeStore(db_path).has_ever_been_nudged(CHANNEL_ID, "bob") is False
+
+    assert service.approve_and_send(proposal_id, approver_id="priya", publisher=publisher, db_path=db_path).outcome == "sent"
+
+    assert NudgeStore(db_path).has_ever_been_nudged(CHANNEL_ID, "bob") is True
+
+
+def test_a_rejected_nudge_does_not_count_as_nudged(tmp_path):
+    db_path = tmp_path / "test.db"
+    _seed_db(db_path)
+    _seed_message(db_path, "alice-mon", "alice", MON)
+    publisher = _RecordingPublisher()
+    run_nudge_job(CHANNEL_ID, _config(), publisher, day=MON, db_path=db_path)
+    pending = service.list_pending_approvals(db_path=db_path)
+    assert [p.payload["member_id"] for p in pending] == ["bob"]
+
+    service.reject(pending[0].proposal_id, approver_id="priya", db_path=db_path)
+
+    assert NudgeStore(db_path).has_ever_been_nudged(CHANNEL_ID, "bob") is False
+
+
+def test_a_human_approved_escalation_is_recorded_as_sent(tmp_path):
+    db_path = tmp_path / "test.db"
+    _seed_db(db_path)
+    config = _config(escalation_threshold_days=1)
+    _sync_config(db_path, config)
+    publisher = _RecordingPublisher()
+    nudge_store = NudgeStore(db_path)
+    escalation_store = EscalationStore(db_path)
+    _seed_message(db_path, "bob-anchor", "bob", FRI_PREV)
+    _seed_message(db_path, "alice-mon", "alice", MON)
+    nudge_store.record(channel_id=CHANNEL_ID, member_id="bob", date=FRI_PREV.isoformat(),
+                        idempotency_key="pre-existing-nudge", proposal_id="n/a")
+    nudge_store.mark_sent(idempotency_key="pre-existing-nudge", sent_at="2026-05-29T09:00:00+00:00")
+    run_escalation_job(CHANNEL_ID, config, publisher, day=MON, db_path=db_path,
+                        escalation_store=escalation_store, nudge_store=nudge_store)
+    proposal_id = service.list_pending_approvals(db_path=db_path)[0].proposal_id
+    assert escalation_store.has_ever_been_escalated(CHANNEL_ID, "bob") is False
+
+    assert service.approve_and_send(proposal_id, approver_id="priya", publisher=publisher, db_path=db_path).outcome == "sent"
+
+    assert escalation_store.has_ever_been_escalated(CHANNEL_ID, "bob") is True

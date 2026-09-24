@@ -165,6 +165,7 @@ class ProposalStore:
 
     def refresh_payload(
         self, proposal_id: str, *, payload: dict, source_refs: list[str] | None = None,
+        also_if_approved_by: str | None = None,
     ) -> Proposal:
         """Replaces a still-pending proposal's payload (and, when given,
         its source_refs) with freshly regenerated content -- used by
@@ -178,8 +179,19 @@ class ProposalStore:
         guarantee create()'s own docstring already makes for that
         field, just re-affirmed on the update path.
 
-        Raises IllegalTransitionError for anything other than a pending
-        proposal: once approved, rejected, or applied, payload is an
+        `also_if_approved_by` widens that to ONE more case: a proposal
+        that is approved but not yet sent, where the approver is exactly
+        that id. It exists for a system approver (the auto-approve id):
+        no human vetted that wording, so when its send fails and is
+        retried hours later the retry may carry current content instead
+        of a stale snapshot -- 2026-09-24, a digest whose 17:30 send
+        failed was resent at 20:57 with 17:30's content, missing two
+        updates posted in between. A proposal a HUMAN approved never
+        matches (their approval was of those exact words), and neither
+        does one that was already sent.
+
+        Raises IllegalTransitionError for anything else: once approved
+        (by anyone else), rejected, or applied, payload is an
         honest record of what was actually decided and must never be
         silently rewritten out from under that decision -- discovered
         2026-09-19 when a real first-publish proposal sat pending for
@@ -189,7 +201,12 @@ class ProposalStore:
         creation-time snapshot. See DECISION_LOG.md.
         """
         current = self.get(proposal_id)
-        if current.status != PENDING:
+        refreshable = current.status == PENDING or (
+            also_if_approved_by is not None
+            and current.status == APPROVED
+            and current.approver_id == also_if_approved_by
+        )
+        if not refreshable:
             raise IllegalTransitionError(
                 f"proposal_id={current.id!r} is {current.status!r}; refusing to refresh its payload -- "
                 "only a still-pending proposal's payload may be replaced with regenerated content"

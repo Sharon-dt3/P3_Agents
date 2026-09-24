@@ -118,14 +118,16 @@ def guarded_send(
 
     try:
         result = send_fn()
-    except Exception:
+    except Exception as exc:
         _log_write(
             db_path,
             proposal_id=proposal_id,
             action_type=action_type,
             target=target,
             status="send_failed",
-            details={"proposal_status": proposal.status},
+            # The reason is kept (2026-09-24): a send_failed row used to say
+            # only "failed", so a repeat could not be diagnosed after the fact.
+            details={"proposal_status": proposal.status, "error": f"{type(exc).__name__}: {exc}"[:500]},
         )
         raise
 

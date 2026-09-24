@@ -114,21 +114,3 @@ class DigestStore:
         finally:
             conn.close()
         return row is not None
-
-    def has_ever_published_type(self, channel_id: str, type: str) -> bool:
-        """Like has_ever_published(), but scoped to one digest type
-        ('daily' or 'weekly'). The weekly roll-up is a different kind of
-        message from the daily digest, so the first one ever sent to a
-        channel must wait for a human even though that channel has long
-        since had daily digests published -- "no channel ever receives an
-        unexpected bot post" applies per kind of post, not once per
-        channel."""
-        conn = get_connection(self._db_path)
-        try:
-            row = conn.execute(
-                "SELECT 1 FROM digests WHERE channel_id = ? AND type = ? AND published_at IS NOT NULL LIMIT 1",
-                (channel_id, type),
-            ).fetchone()
-        finally:
-            conn.close()
-        return row is not None

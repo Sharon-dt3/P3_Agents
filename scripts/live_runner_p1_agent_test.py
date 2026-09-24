@@ -62,8 +62,9 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -71,6 +72,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "spine" / "src"))
 
 from dotenv import load_dotenv
+from requests.exceptions import RequestException
 
 load_dotenv()
 
@@ -89,6 +91,7 @@ from p1.ingestion.sync import sync_channel, sync_channel_replies
 from p1.llm.gateway import LLMGateway
 from p1.nudges.nudge_job import run_nudge_job
 from p1.publishing.scheduler import add_weekly_rollup_jobs, build_scheduler
+from p1.publishing.catchup import run_missed_publishing
 from p1.publishing.daily_job import run_daily_digest_job
 from p1.publishing.weekly_job import run_weekly_rollup_job
 from p1.storage.db import get_connection, init_db
@@ -176,42 +179,18 @@ def _sync_supabase_mirror(db_path: str) -> None:
         _log(f"[supabase] SKIPPED -- {type(exc).__name__}: {exc}")
 
 
-def _poll_ingest(*, tenant_id: str, client_id: str, team_id: str, gateway, db_path: str) -> None:
-    """One ingestion tick. Never raises -- a failed poll (expired
-    refresh token, a transient Graph error, a rate limit) is logged and
-    skipped; the next scheduled tick tries again on its own. Nothing
-    about this function ever blocks waiting for a human.
-
-    2026-09-20 finding: an earlier version of this function only called
-    sync_channel() -- a message would land in `messages` but never in
-    `classifications`, so it stayed permanently invisible to
-    gather_daily_facts() (which reads classifications, never messages,
-    directly) no matter how fresh ingestion was. classify_and_persist()
-    is idempotent (ClassificationStore.record() is an upsert keyed on
-    message_id -- see its own docstring), so reclassifying the channel's
-    full known message set on every tick, not just what this tick's
-    sync_channel() call happened to return, is safe and simple, matching
-    run_live_pipeline_p1_agent_test.py's own approach.
-
-    2026-09-20 second finding: this function used to receive `config`
-    as a frozen argument, captured once in main() at process startup
-    and never refreshed -- so a channel owner's live roster/window/
-    exceptions edit (via Copilot Studio or the Streamlit dashboard,
-    both of which call ChannelConfigStore.update_channel_config()) had
-    no path to ever reaching this function, running or restarted (see
-    DECISION_LOG.md). Config is now fetched fresh, via
-    get_effective_config(), on every tick instead -- the same live-read
-    path the escalation-resend flow already relied on for
-    channel_owner_id."""
-    try:
+def _ingest_and_classify(*, tenant_id: str, client_id: str, team_id: str, gateway, db_path: str) -> None:
+    """Pull new messages, thread replies and classify them -- and RAISE if any
+    of it fails. Two callers need opposite behaviour: the 5-minute poll tick
+    (_poll_ingest, below) must never crash the scheduler thread, so it wraps this
+    and logs; the publishing jobs must NOT build a digest on stale data, so they
+    call this directly right before generating and treat a failure as a failed
+    attempt (retried, then caught up). Serialised by _ingest_lock so a poll tick
+    and a pre-digest refresh never sync the same channel at once."""
+    with _ingest_lock:
         access_token = get_access_token(
             tenant_id=tenant_id, client_id=client_id, allow_interactive=False,
         )
-    except GraphAuthError as exc:
-        _log(f"[ingest] SKIPPED -- {exc}")
-        return
-
-    try:
         config = ChannelConfigStore().get_effective_config(CHANNEL_ID, db_path=db_path)
         raw_reader = GraphTeamsReader(access_token=access_token, team_id=team_id)
         reader = ScopedTeamsReader(raw_reader, allowlisted_channel_ids=[CHANNEL_ID], db_path=db_path)
@@ -246,7 +225,42 @@ def _poll_ingest(*, tenant_id: str, client_id: str, team_id: str, gateway, db_pa
         noise_count = sum(1 for o in outcomes if o.label == "noise")
         _log(f"[classify] {len(outcomes)} message(s) evaluated: {len(outcomes) - noise_count} signal, {noise_count} noise")
 
+
+
+def _poll_ingest(*, tenant_id: str, client_id: str, team_id: str, gateway, db_path: str) -> None:
+    """One ingestion tick. Never raises -- a failed poll (expired
+    refresh token, a transient Graph error, a rate limit) is logged and
+    skipped; the next scheduled tick tries again on its own. Nothing
+    about this function ever blocks waiting for a human.
+
+    2026-09-20 finding: an earlier version of this function only called
+    sync_channel() -- a message would land in `messages` but never in
+    `classifications`, so it stayed permanently invisible to
+    gather_daily_facts() (which reads classifications, never messages,
+    directly) no matter how fresh ingestion was. classify_and_persist()
+    is idempotent (ClassificationStore.record() is an upsert keyed on
+    message_id -- see its own docstring), so reclassifying the channel's
+    full known message set on every tick, not just what this tick's
+    sync_channel() call happened to return, is safe and simple, matching
+    run_live_pipeline_p1_agent_test.py's own approach.
+
+    2026-09-20 second finding: this function used to receive `config`
+    as a frozen argument, captured once in main() at process startup
+    and never refreshed -- so a channel owner's live roster/window/
+    exceptions edit (via Copilot Studio or the Streamlit dashboard,
+    both of which call ChannelConfigStore.update_channel_config()) had
+    no path to ever reaching this function, running or restarted (see
+    DECISION_LOG.md). Config is now fetched fresh, via
+    get_effective_config(), on every tick instead -- the same live-read
+    path the escalation-resend flow already relied on for
+    channel_owner_id."""
+    try:
+        _ingest_and_classify(
+            tenant_id=tenant_id, client_id=client_id, team_id=team_id, gateway=gateway, db_path=db_path,
+        )
         _sync_supabase_mirror(db_path)
+    except GraphAuthError as exc:
+        _log(f"[ingest] SKIPPED -- {exc}")
     except Exception as exc:  # noqa: BLE001 -- a poll tick must never crash the scheduler thread
         _log(f"[ingest] FAILED -- {type(exc).__name__}: {exc}")
 
@@ -288,6 +302,25 @@ def _run_nudges_and_escalations(*, publisher, db_path: str) -> None:
         _log(f"[escalation] FAILED -- {type(exc).__name__}: {exc}")
 
 
+# One publishing job at a time in this process: the scheduled digest job, its
+# retries, and the catch-up tick must never run concurrently, or two of them
+# could both try to send the same digest.
+_publishing_lock = threading.Lock()
+# Held while ingesting, so the 5-minute poll tick and a pre-digest refresh never
+# sync the same channel at the same time.
+_ingest_lock = threading.Lock()
+
+# Set by main(): pulls the latest Teams messages and classifies them. Called at
+# the start of every publishing attempt so a digest is built from CURRENT data,
+# never from whatever the last 5-minute poll happened to save (which can be
+# minutes old, or hours old if polling was failing -- 2026-09-24). If it raises,
+# the attempt fails and is retried/caught up: a late, complete digest beats an
+# on-time, incomplete one that is final the moment it posts.
+_PRE_PUBLISH_REFRESH = None
+
+CATCHUP_MINUTES = 5
+_NETWORK_WAIT_SECONDS = 30
+
 _JOB_ATTEMPTS = 3
 _JOB_RETRY_WAIT_SECONDS = 120
 
@@ -300,8 +333,16 @@ def _run_with_retries(label: str, job, kwargs) -> None:
     silently never posts is exactly the failure this project already had
     once (2026-09-23), so a failure here is logged loudly and retried
     rather than lost inside APScheduler."""
+    with _publishing_lock:
+        _run_with_retries_locked(label, job, kwargs)
+
+
+def _run_with_retries_locked(label: str, job, kwargs) -> None:
     for attempt in range(1, _JOB_ATTEMPTS + 1):
         try:
+            if _PRE_PUBLISH_REFRESH is not None:
+                _log(f"[{label}] pulling the latest Teams messages before generating ...")
+                _PRE_PUBLISH_REFRESH()
             result = job(**kwargs)
             _log(f"[{label}] {result.date}: {result.status} -- {result.detail}")
             return
@@ -309,7 +350,37 @@ def _run_with_retries(label: str, job, kwargs) -> None:
             _log(f"[{label}] attempt {attempt}/{_JOB_ATTEMPTS} FAILED -- {type(exc).__name__}: {exc}")
             if attempt < _JOB_ATTEMPTS:
                 time.sleep(_JOB_RETRY_WAIT_SECONDS)
-    _log(f"[{label}] gave up after {_JOB_ATTEMPTS} attempts -- re-run scripts/run_live_pipeline_p1_agent_test.py to retry")
+    _log(f"[{label}] gave up after {_JOB_ATTEMPTS} attempts -- the catch-up check retries every "
+         f"{CATCHUP_MINUTES} min today, or re-run scripts/run_live_pipeline_p1_agent_test.py now")
+
+
+def _catch_up(**kwargs) -> None:
+    """Every few minutes: if today's daily digest or weekly roll-up is due,
+    unsent, and not waiting on a human, send it. This is what makes a missed
+    or failed send self-heal once the network is back -- see
+    p1.publishing.catchup for the conservative rules. Never raises; a failure
+    is logged and simply retried on the next tick."""
+    with _publishing_lock:
+        try:
+            for kind, result in run_missed_publishing(**kwargs, before=_PRE_PUBLISH_REFRESH):
+                _log(f"[catch-up] {kind} {result.date}: {result.status} -- {result.detail}")
+        except Exception as exc:  # noqa: BLE001
+            _log(f"[catch-up] FAILED, will retry next tick -- {type(exc).__name__}: {exc}")
+
+
+def _wait_for_token(tenant_id: str, client_id: str) -> None:
+    """Startup token check that WAITS for the internet instead of crashing:
+    a runner started while offline (2026-09-24, 18:59: 'Failed to resolve
+    login.microsoftonline.com') used to die with a traceback and stay dead.
+    Only a genuine connectivity failure is retried; a real auth problem
+    (GraphAuthError) still stops startup immediately."""
+    while True:
+        try:
+            get_access_token(tenant_id=tenant_id, client_id=client_id, allow_interactive=True)
+            return
+        except (RequestException, OSError) as exc:
+            _log(f"No internet yet ({type(exc).__name__}) -- retrying in {_NETWORK_WAIT_SECONDS}s. Ctrl+C to stop.")
+            time.sleep(_NETWORK_WAIT_SECONDS)
 
 
 def _run_daily_digest(**kwargs) -> None:
@@ -338,6 +409,7 @@ def main() -> int:
     _log(f"  ingest poll: every {INGEST_POLL_MINUTES} min")
     _log(f"  daily digest: {config.daily_digest_time} {config.timezone}, working days {config.working_days}")
     _log(f"  weekly roll-up: {config.weekly_digest_day} {config.weekly_digest_time} {config.timezone}")
+    _log(f"  catch-up: every {CATCHUP_MINUTES} min (sends today's digest/weekly if it was missed)")
     _log(f"  nudge/escalation check: {config.update_window_end} {config.timezone} (end of update window)")
 
     # Seeds the token cache interactively, right here in the foreground,
@@ -345,11 +417,16 @@ def main() -> int:
     # interactive prompt is ever allowed to block, since this is startup,
     # in the main thread, with a person watching the terminal.
     try:
-        get_access_token(tenant_id=tenant_id, client_id=client_id, allow_interactive=True)
+        _wait_for_token(tenant_id, client_id)
         _log("Graph token cache OK.")
     except GraphAuthError as exc:
         print(f"Could not obtain an initial Graph token: {exc}")
         return 1
+
+    global _PRE_PUBLISH_REFRESH
+    _PRE_PUBLISH_REFRESH = lambda: _ingest_and_classify(
+        tenant_id=tenant_id, client_id=client_id, team_id=team_id, gateway=gateway, db_path=LIVE_DB_PATH,
+    )
 
     # The existing, already-tested production scheduler -- this is the
     # first caller anywhere in the codebase to actually .start() it.
@@ -369,6 +446,18 @@ def main() -> int:
             "gateway": gateway, "db_path": LIVE_DB_PATH,
         },
         next_run_time=datetime.now(),  # run one immediately, don't wait a full interval
+    )
+
+    # Self-healing: see _catch_up. First run ~90s after start, so the immediate
+    # ingest tick above has already pulled anything posted while we were down.
+    scheduler.add_job(
+        _catch_up,
+        trigger=IntervalTrigger(minutes=CATCHUP_MINUTES),
+        id=f"catchup:{CHANNEL_ID}",
+        kwargs={
+            "config": config, "gateway": gateway, "publisher": publisher, "db_path": LIVE_DB_PATH,
+        },
+        next_run_time=datetime.now() + timedelta(seconds=90),
     )
 
     day_of_week = ",".join(_DAY_NAMES[d] for d in config.working_days if d in _DAY_NAMES)

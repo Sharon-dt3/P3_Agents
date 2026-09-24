@@ -15,16 +15,17 @@ status vocabulary rather than inventing a second one:
     channel per week" means; content may be regenerated any number of
     times until approved, the proposal is created once.
 
-The first weekly roll-up ever sent to a channel requires a human's
-approval (DigestStore.has_ever_published_type(channel, "weekly") is
-False), even though the channel has long had daily digests published: a
-weekly roll-up is a new kind of message, and "no channel ever receives an
-unexpected bot post" applies per kind of post. Every later week runs
-unattended, approved by the same honest system approver id the daily
-digest uses. A human approves the first one the same way as any other
-proposal, then re-runs this job (scripts/run_live_weekly_p1_agent_test.py)
-to send it -- the scheduler fires once a week, so it does not retry on its
-own.
+Approval follows the spec's one rule for scheduled publishing (CHN-17):
+only a channel's FIRST publish ever waits for a human
+(DigestStore.has_ever_published(channel) is False). A channel that has
+already had a digest published -- daily or weekly -- is past that gate, so
+its weekly roll-up runs unattended, approved by the same honest system
+approver id the daily digest uses. (An earlier version of this job asked
+for a second, per-type "first weekly" approval; that was stricter than the
+spec and was removed 2026-09-24 -- see DECISION_LOG.md.) A channel that has
+never published anything still holds its first post for a human, who
+approves it and then re-runs this job (scripts/run_live_weekly_p1_agent_test.py)
+to send it.
 
 Sending is delegated to SPN-09's guarded_send() on EVERY run, whatever the
 proposal's status, so suppressed reruns are visible in write_log exactly
@@ -38,7 +39,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from p1.approval.proposals import APPLIED, PENDING, REJECTED, ProposalStore
+from p1.approval.proposals import APPLIED, APPROVED, PENDING, REJECTED, ProposalStore
 from p1.approval.write_guard import WriteRefusedError, guarded_send
 from p1.config.schema import ChannelConfig
 from p1.prompts import PromptRegistry
@@ -55,8 +56,6 @@ from p1.publishing.daily_job import (
 from p1.reporting.weekly_summary import generate_and_persist_weekly_rollup
 from p1.storage.db import DEFAULT_DB_PATH
 from p1.storage.digests_repo import DigestStore
-
-WEEKLY_DIGEST_TYPE = "weekly"
 
 
 def run_weekly_rollup_job(
@@ -102,7 +101,7 @@ def run_weekly_rollup_job(
     }
 
     if proposal is None:
-        is_first_weekly_ever = not digest_store.has_ever_published_type(channel_id, WEEKLY_DIGEST_TYPE)
+        is_first_publish_ever = not digest_store.has_ever_published(channel_id)
         proposal = proposal_store.create(
             type="weekly_rollup_publish",
             payload=publish_payload,
@@ -110,10 +109,15 @@ def run_weekly_rollup_job(
             source_refs=source_refs,
             idempotency_key=publish_key,
         )
-        if not is_first_weekly_ever:
+        if not is_first_publish_ever:
             proposal = proposal_store.approve(proposal.id, approver_id=AUTO_APPROVE_APPROVER_ID)
     elif proposal.status == PENDING:
         proposal = proposal_store.refresh_payload(proposal.id, payload=publish_payload, source_refs=source_refs)
+    elif proposal.status == APPROVED and proposal.approver_id == AUTO_APPROVE_APPROVER_ID:
+        proposal = proposal_store.refresh_payload(
+            proposal.id, payload=publish_payload, source_refs=source_refs,
+            also_if_approved_by=AUTO_APPROVE_APPROVER_ID,
+        )
 
     def send_fn():
         fresh = proposal_store.get(proposal.id)

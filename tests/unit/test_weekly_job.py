@@ -1,14 +1,16 @@
 """
 Scheduled publishing of the weekly roll-up (run_weekly_rollup_job and its
 schedule wiring). Walks the same status machine test_daily_job.py walks for
-the daily digest -- first-ever weekly needs a human, a rerun never
-duplicates or sends, a rejection never sends, an approved one sends exactly
-once, later weeks run unattended -- plus the one rule that is new here: the
-"first ever" question is asked per digest TYPE, so a channel with a long
-history of published DAILY digests still holds its first WEEKLY roll-up for
-a human. Also proves the schedule itself: the job fires on the channel's
-weekly_digest_day at weekly_digest_time in its own timezone, and
-add_weekly_rollup_jobs() adds it to a scheduler that already has other jobs.
+the daily digest -- a channel's first publish ever needs a human, a rerun
+never duplicates or sends, a rejection never sends, an approved one sends
+exactly once, later publishes run unattended -- plus the rule that matters
+for the weekly: approval follows the spec's ONE per-channel rule (CHN-17), so
+a channel that has already had a digest published is past the gate and its
+weekly roll-up posts on its own. (An earlier version held the first weekly
+per digest TYPE, stricter than the spec.) Also proves the schedule itself:
+the job fires on the channel's weekly_digest_day at weekly_digest_time in its
+own timezone, and add_weekly_rollup_jobs() adds it to a scheduler that
+already has other jobs.
 """
 
 from __future__ import annotations
@@ -107,19 +109,22 @@ def test_the_first_weekly_rollup_ever_waits_for_a_human_and_sends_nothing(db_pat
     assert publisher.calls == []
 
 
-def test_first_weekly_is_held_even_when_the_channel_already_published_daily_digests(db_path):
-    """The per-type rule: a published DAILY digest must not count as
-    'this channel has had a weekly roll-up before'."""
+def test_a_channel_that_already_published_a_daily_digest_posts_its_weekly_unattended(db_path):
+    """Per the spec (CHN-17) only a channel's FIRST publish ever waits for a
+    human; a published daily digest means this channel is past that gate."""
     digests = DigestStore(db_path)
     digests.record(channel_id=CHANNEL_ID, date="2026-06-04", type="daily", content="x",
                    idempotency_key=f"{CHANNEL_ID}:2026-06-04:daily")
     digests.mark_published(idempotency_key=f"{CHANNEL_ID}:2026-06-04:daily", published_at="2026-06-04T12:00:00+00:00")
     assert digests.has_ever_published(CHANNEL_ID) is True
-    assert digests.has_ever_published_type(CHANNEL_ID, "weekly") is False
 
     publisher = _Publisher()
-    assert _run(db_path, FRIDAY1, publisher).status == AWAITING_APPROVAL
-    assert publisher.calls == []
+    result = _run(db_path, FRIDAY1, publisher)
+
+    assert result.status == PUBLISHED
+    assert len(publisher.calls) == 1
+    proposal = ProposalStore(db_path).get_by_idempotency_key(f"{CHANNEL_ID}:{FRIDAY1.isoformat()}:weekly_publish")
+    assert proposal.approver_id == "system:auto_approve_after_first_publish"
 
 
 def test_rerunning_before_approval_never_duplicates_the_proposal_or_sends(db_path):
@@ -148,7 +153,7 @@ def test_an_approved_weekly_sends_exactly_once_across_reruns(db_path):
     assert publisher.calls[0][0] == CHANNEL_ID
     assert "Weekly Roll-up" in publisher.calls[0][1]
     assert store.get(proposal.id).status == APPLIED
-    assert DigestStore(db_path).has_ever_published_type(CHANNEL_ID, "weekly") is True
+    assert DigestStore(db_path).has_ever_published(CHANNEL_ID) is True
 
 
 def test_a_rejected_weekly_never_sends_on_any_rerun(db_path):

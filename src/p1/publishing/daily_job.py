@@ -69,7 +69,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from p1.approval.proposals import APPLIED, PENDING, REJECTED, ProposalStore
+from p1.approval.proposals import APPLIED, APPROVED, PENDING, REJECTED, ProposalStore
 from p1.approval.write_guard import WriteRefusedError, guarded_send
 from p1.config.calendar import is_working_day
 from p1.config.schema import ChannelConfig
@@ -190,6 +190,14 @@ def run_daily_digest_job(
         # so a decided proposal's payload is never touched here.
         proposal = proposal_store.refresh_payload(
             proposal.id, payload=publish_payload, source_refs=source_refs,
+        )
+    elif proposal.status == APPROVED and proposal.approver_id == AUTO_APPROVE_APPROVER_ID:
+        # Approved by the system itself (no human vetted this wording) but never
+        # sent -- a failed send being retried later. Carry current content, not
+        # the snapshot from the first attempt. See ProposalStore.refresh_payload.
+        proposal = proposal_store.refresh_payload(
+            proposal.id, payload=publish_payload, source_refs=source_refs,
+            also_if_approved_by=AUTO_APPROVE_APPROVER_ID,
         )
 
     def send_fn():
