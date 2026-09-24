@@ -41,7 +41,8 @@ class ClassificationStore:
                     label = excluded.label,
                     confidence = excluded.confidence,
                     method = excluded.method,
-                    rule_name = excluded.rule_name
+                    rule_name = excluded.rule_name,
+                    created_at = datetime('now')
                 """,
                 {
                     "message_id": message_id,
@@ -54,3 +55,19 @@ class ClassificationStore:
             conn.commit()
         finally:
             conn.close()
+
+    def model_verdicts(self) -> dict[str, tuple[str, float | None, str]]:
+        """message_id -> (label, confidence, classified_at) for every row a
+        MODEL settled (method='model'). classified_at is when the row was
+        last written -- record() refreshes it on every re-record -- so a
+        caller can tell "the model has already judged this exact text"
+        from "this message was edited after the model saw it". A model
+        verdict of 'noise' is never stored, so it is never in this map."""
+        conn = get_connection(self._db_path)
+        try:
+            rows = conn.execute(
+                "SELECT message_id, label, confidence, created_at FROM classifications WHERE method = 'model'"
+            ).fetchall()
+        finally:
+            conn.close()
+        return {r["message_id"]: (r["label"], r["confidence"], r["created_at"]) for r in rows}

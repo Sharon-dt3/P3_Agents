@@ -141,6 +141,11 @@ class LLMGateway:
         self.anthropic_model = anthropic_model
         self.ollama_base_url = ollama_base_url or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
         self.ollama_model = ollama_model or os.environ.get("OLLAMA_MODEL", "llama3:8b")
+        # A local Ollama answers one request at a time, so a request can wait
+        # behind another caller's batch (a live runner's classification tick,
+        # say) and a cold model takes ~20s just to load. 60s -- the old fixed
+        # value -- was too short for that; 2026-09-24 a digest preview timed out.
+        self.ollama_timeout = float(os.environ.get("OLLAMA_TIMEOUT_SECONDS", "180"))
         # AWS Bedrock (SPN-02's third provider): reaches the same Claude
         # models through AWS-hosted infrastructure instead of Anthropic's
         # own API. Authenticates via an explicit access key/secret/region,
@@ -415,7 +420,7 @@ class LLMGateway:
             "options": {"temperature": temperature, "num_predict": max_tokens},
         }
         try:
-            with self._make_ollama_client(base_url=self.ollama_base_url, timeout=60.0) as client:
+            with self._make_ollama_client(base_url=self.ollama_base_url, timeout=self.ollama_timeout) as client:
                 resp = client.post("/api/generate", json=payload)
                 resp.raise_for_status()
                 data = resp.json()

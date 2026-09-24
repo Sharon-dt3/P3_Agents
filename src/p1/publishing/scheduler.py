@@ -66,6 +66,7 @@ def build_scheduler(
     publisher,
     *,
     db_path: str | Path = DEFAULT_DB_PATH,
+    job_fn=run_daily_digest_job,
 ) -> BackgroundScheduler:
     """The real production scheduler: one CronTrigger per channel, firing
     at that channel's own local daily_digest_time on its own working
@@ -78,7 +79,7 @@ def build_scheduler(
     return _spine_build_scheduler(
         configs,
         to_spec=_to_spec,
-        job_fn=run_daily_digest_job,
+        job_fn=job_fn,
         job_kwargs=lambda config: {
             "channel_id": config.channel_id,
             "config": config,

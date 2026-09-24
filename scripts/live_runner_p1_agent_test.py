@@ -89,6 +89,7 @@ from p1.ingestion.sync import sync_channel, sync_channel_replies
 from p1.llm.gateway import LLMGateway
 from p1.nudges.nudge_job import run_nudge_job
 from p1.publishing.scheduler import add_weekly_rollup_jobs, build_scheduler
+from p1.publishing.daily_job import run_daily_digest_job
 from p1.publishing.weekly_job import run_weekly_rollup_job
 from p1.storage.db import get_connection, init_db
 from p1.storage.messages_repo import MessageStore
@@ -238,7 +239,10 @@ def _poll_ingest(*, tenant_id: str, client_id: str, team_id: str, gateway, db_pa
         _log(f"[ingest] {reply_count} reply message(s) synced across {len(root_ids)} thread(s)")
 
         messages = _load_channel_messages(db_path, CHANNEL_ID)
-        outcomes = classify_and_persist(messages, config, gateway, db_path=db_path)
+        # reuse_model_verdicts: a message the model already judged (and that has not
+        # been edited) keeps its verdict -- otherwise every tick re-sent every
+        # unsettled message to the local model and starved the digest job.
+        outcomes = classify_and_persist(messages, config, gateway, db_path=db_path, reuse_model_verdicts=True)
         noise_count = sum(1 for o in outcomes if o.label == "noise")
         _log(f"[classify] {len(outcomes)} message(s) evaluated: {len(outcomes) - noise_count} signal, {noise_count} noise")
 
@@ -284,17 +288,36 @@ def _run_nudges_and_escalations(*, publisher, db_path: str) -> None:
         _log(f"[escalation] FAILED -- {type(exc).__name__}: {exc}")
 
 
+_JOB_ATTEMPTS = 3
+_JOB_RETRY_WAIT_SECONDS = 120
+
+
+def _run_with_retries(label: str, job, kwargs) -> None:
+    """Runs a scheduled publishing job, logging its result. Never raises,
+    and retries: both the daily digest and the weekly roll-up are
+    idempotent (a rerun can never post twice), so a failed attempt --
+    typically a local-model timeout -- is safe to try again. A digest that
+    silently never posts is exactly the failure this project already had
+    once (2026-09-23), so a failure here is logged loudly and retried
+    rather than lost inside APScheduler."""
+    for attempt in range(1, _JOB_ATTEMPTS + 1):
+        try:
+            result = job(**kwargs)
+            _log(f"[{label}] {result.date}: {result.status} -- {result.detail}")
+            return
+        except Exception as exc:  # noqa: BLE001
+            _log(f"[{label}] attempt {attempt}/{_JOB_ATTEMPTS} FAILED -- {type(exc).__name__}: {exc}")
+            if attempt < _JOB_ATTEMPTS:
+                time.sleep(_JOB_RETRY_WAIT_SECONDS)
+    _log(f"[{label}] gave up after {_JOB_ATTEMPTS} attempts -- re-run scripts/run_live_pipeline_p1_agent_test.py to retry")
+
+
+def _run_daily_digest(**kwargs) -> None:
+    _run_with_retries("digest", run_daily_digest_job, kwargs)
+
+
 def _run_weekly_rollup(**kwargs) -> None:
-    """The weekly roll-up tick. Never raises -- a failed roll-up (a model
-    timeout, say) is logged here instead of disappearing inside
-    APScheduler, same reason _poll_ingest and the nudge tick never raise.
-    Fires once a week, so a failure is not retried on its own: re-run
-    scripts/run_live_weekly_p1_agent_test.py (idempotent) to retry."""
-    try:
-        result = run_weekly_rollup_job(**kwargs)
-        _log(f"[weekly] week ending {result.date}: {result.status} -- {result.detail}")
-    except Exception as exc:  # noqa: BLE001
-        _log(f"[weekly] FAILED -- {type(exc).__name__}: {exc}")
+    _run_with_retries("weekly", run_weekly_rollup_job, kwargs)
 
 
 def main() -> int:
@@ -330,7 +353,9 @@ def main() -> int:
 
     # The existing, already-tested production scheduler -- this is the
     # first caller anywhere in the codebase to actually .start() it.
-    scheduler = build_scheduler([config], gateway, publisher, db_path=LIVE_DB_PATH)
+    scheduler = build_scheduler(
+        [config], gateway, publisher, db_path=LIVE_DB_PATH, job_fn=_run_daily_digest,
+    )
     add_weekly_rollup_jobs(
         scheduler, [config], gateway, publisher, db_path=LIVE_DB_PATH, job_fn=_run_weekly_rollup,
     )

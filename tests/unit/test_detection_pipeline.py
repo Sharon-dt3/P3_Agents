@@ -179,3 +179,83 @@ def test_returns_one_outcome_per_message_preserving_order(db_path):
 
     assert [o.message_id for o in outcomes] == ["m1", "m2"]
     assert gateway.calls == 1  # only the eligible message reached the model
+
+
+# --- reuse_model_verdicts: the live runners' every-tick re-run (2026-09-24) ---------------
+
+def _backdate_classification(db_path, message_id, when="2020-01-01 00:00:00") -> None:
+    conn = get_connection(db_path)
+    conn.execute("UPDATE classifications SET created_at = ? WHERE message_id = ?", (when, message_id))
+    conn.commit()
+    conn.close()
+
+
+def test_default_still_rejudges_every_message_every_run(db_path):
+    """Off by default: one-shot scripts, the eval harness and prompt-version
+    comparisons all rely on a fresh judgement each run."""
+    message = make_message()
+    _seed_messages(db_path, [message])
+    gateway = FakeGateway(['{"label": "update", "confidence": 0.9}', '{"label": "question", "confidence": 0.8}'])
+
+    classify_and_persist([message], make_config(), gateway, db_path=db_path)
+    classify_and_persist([message], make_config(), gateway, db_path=db_path)
+
+    assert gateway.calls == 2
+    assert _classification_rows(db_path)[message.id]["label"] == "question"
+
+
+def test_a_message_the_model_already_judged_is_not_sent_to_the_model_again(db_path):
+    message = make_message()
+    _seed_messages(db_path, [message])
+    first = FakeGateway(['{"label": "update", "confidence": 0.9}'])
+    classify_and_persist([message], make_config(), first, db_path=db_path, reuse_model_verdicts=True)
+    assert first.calls == 1
+
+    second = FakeGateway([])  # any call would raise IndexError
+    outcomes = classify_and_persist([message], make_config(), second, db_path=db_path, reuse_model_verdicts=True)
+
+    assert second.calls == 0
+    assert (outcomes[0].label, outcomes[0].method, outcomes[0].confidence) == ("update", "model", 0.9)
+    assert _classification_rows(db_path)[message.id]["label"] == "update"
+
+
+def test_an_edit_after_the_verdict_is_rejudged_and_then_stops_being_rejudged(db_path):
+    message = make_message(body="Should we ship on Friday?")
+    _seed_messages(db_path, [message])
+    classify_and_persist(
+        [message], make_config(), FakeGateway(['{"label": "question", "confidence": 0.9}']),
+        db_path=db_path, reuse_model_verdicts=True,
+    )
+    _backdate_classification(db_path, message.id, "2026-06-02 01:00:00")
+
+    edited = make_message(body="Finished the auth flow, tests pass.", edited_at="2026-06-02T02:00:00Z")
+    rejudge = FakeGateway(['{"label": "update", "confidence": 0.95}'])
+    outcomes = classify_and_persist([edited], make_config(), rejudge, db_path=db_path, reuse_model_verdicts=True)
+    assert rejudge.calls == 1
+    assert outcomes[0].label == "update"
+
+    # The re-record refreshed the row's timestamp, so the SAME edit is not
+    # re-judged again on every later tick.
+    again = FakeGateway([])
+    classify_and_persist([edited], make_config(), again, db_path=db_path, reuse_model_verdicts=True)
+    assert again.calls == 0
+
+
+def test_rules_are_still_reevaluated_for_a_message_that_has_a_stored_model_verdict(db_path):
+    """A config change can newly settle a message; reuse must never freeze
+    that out. Here the message was model-judged, then the roster changes
+    so a rule now excludes it."""
+    message = make_message()
+    _seed_messages(db_path, [message])
+    classify_and_persist(
+        [message], make_config(), FakeGateway(['{"label": "update", "confidence": 0.9}']),
+        db_path=db_path, reuse_model_verdicts=True,
+    )
+
+    outcomes = classify_and_persist(
+        [message], make_config(roster=["someone-else"]), FakeGateway([]),
+        db_path=db_path, reuse_model_verdicts=True,
+    )
+
+    assert (outcomes[0].method, outcomes[0].rule_name) == ("rule", "not_on_roster")
+    assert _classification_rows(db_path)[message.id]["rule_name"] == "not_on_roster"

@@ -166,7 +166,7 @@ def _poll_ingest(*, channel_id: str, tenant_id: str, client_id: str, team_id: st
         _log(f"[{channel_id}] [ingest] {reply_count} reply message(s) synced across {len(root_ids)} thread(s)")
 
         messages = _load_channel_messages(db_path, channel_id)
-        outcomes = classify_and_persist(messages, config, gateway, db_path=db_path)
+        outcomes = classify_and_persist(messages, config, gateway, db_path=db_path, reuse_model_verdicts=True)
         noise_count = sum(1 for o in outcomes if o.label == "noise")
         _log(
             f"[{channel_id}] [classify] {len(outcomes)} message(s) evaluated: "

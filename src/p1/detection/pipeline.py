@@ -30,7 +30,10 @@ rule-settled rows (a rule has no confidence to be uncertain about).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
+
+from spine.config.calendar import parse_instant
 
 from p1.adapters.teams_reader import TeamsMessage
 from p1.config.schema import ChannelConfig
@@ -59,6 +62,16 @@ class ClassificationOutcome:
     uncertain: bool
 
 
+def _edited_since(message: TeamsMessage, classified_at: str) -> bool:
+    """True iff Teams reports this message edited AFTER its stored model
+    verdict was written -- classified_at is SQLite's UTC 'YYYY-MM-DD
+    HH:MM:SS'. A message never edited is never "edited since"."""
+    if not message.edited_at:
+        return False
+    written = datetime.strptime(classified_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    return parse_instant(message.edited_at) > written
+
+
 def classify_and_persist(
     messages: list[TeamsMessage],
     config: ChannelConfig,
@@ -66,9 +79,25 @@ def classify_and_persist(
     *,
     db_path: str | Path = DEFAULT_DB_PATH,
     prompt_registry: PromptRegistry | None = None,
+    reuse_model_verdicts: bool = False,
 ) -> list[ClassificationOutcome]:
+    """reuse_model_verdicts=True is for a caller that re-runs this over the
+    same growing message list on a timer (the live runners' 5-minute tick):
+    a message the MODEL has already judged, and that has not been edited
+    since, keeps its stored verdict instead of being sent to the model
+    again. Rules are still re-evaluated for every message every time (they
+    are free, and a config change can newly settle a message), and an
+    edited message is always re-judged. Off by default, so every one-shot
+    script, the eval harness and any prompt-version comparison still
+    re-judge everything.
+
+    Found 2026-09-24: without this, each tick sent every unsettled message
+    (31 for one channel, ~3.6 minutes of a 5-minute cycle) to a local model
+    that answers one request at a time, so anything else needing the model
+    -- including the real 17:30 digest -- queued behind it and timed out."""
     store = ClassificationStore(db_path)
     outcomes: list[ClassificationOutcome] = []
+    stored_verdicts = store.model_verdicts() if reuse_model_verdicts else {}
 
     for message in messages:
         rule_decision = evaluate_message(message, config)
@@ -90,6 +119,17 @@ def classify_and_persist(
                     rule_name=rule_decision.rule_name,
                     persisted=True,
                     uncertain=False,
+                )
+            )
+            continue
+
+        prior = stored_verdicts.get(message.id)
+        if prior is not None and not _edited_since(message, prior[2]):
+            label, confidence, _ = prior
+            outcomes.append(
+                ClassificationOutcome(
+                    message_id=message.id, label=label, method="model", confidence=confidence,
+                    rule_name=None, persisted=True, uncertain=is_uncertain(confidence),
                 )
             )
             continue
