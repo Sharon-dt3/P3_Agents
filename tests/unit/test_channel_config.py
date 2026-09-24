@@ -158,3 +158,38 @@ def test_reset_owner_fields_restores_yaml_and_is_audited(tmp_path):
     )]
     conn.close()
     assert actions == ["channel_config.updated", "channel_config.reset_from_yaml"]
+
+
+# --- the weekly roll-up must fire after the day's work is done (2026-09-24) ------------
+
+def _load(tmp_path, data):
+    config_dir = tmp_path / "channels"
+    config_dir.mkdir()
+    _write_config(config_dir, data)
+    return ChannelConfigStore(config_dir)
+
+
+def test_weekly_time_before_the_update_window_closes_is_rejected(tmp_path):
+    """The real misconfiguration found live: p1-agent-test's window closed
+    at 17:30 but its weekly roll-up fired at 16:00, so the week's last day
+    was summarised while people could still post."""
+    bad = dict(ALPHA, update_window_end="17:30:00", daily_digest_time="17:30:00", weekly_digest_time="16:00:00")
+    with pytest.raises(Exception, match="weekly_digest_time"):
+        _load(tmp_path, bad).list_configured_channels()
+
+
+def test_weekly_time_equal_to_the_window_end_is_rejected(tmp_path):
+    bad = dict(ALPHA, update_window_end="11:00:00", daily_digest_time="11:00:00", weekly_digest_time="11:00:00")
+    with pytest.raises(Exception, match="weekly_digest_time"):
+        _load(tmp_path, bad).list_configured_channels()
+
+
+def test_weekly_time_before_the_daily_digest_is_rejected_even_after_the_window(tmp_path):
+    bad = dict(ALPHA, update_window_end="11:00:00", daily_digest_time="12:00:00", weekly_digest_time="11:30:00")
+    with pytest.raises(Exception, match="daily_digest_time"):
+        _load(tmp_path, bad).list_configured_channels()
+
+
+def test_weekly_time_after_both_the_window_and_the_daily_digest_is_accepted(tmp_path):
+    good = dict(ALPHA, update_window_end="17:30:00", daily_digest_time="17:30:00", weekly_digest_time="17:45:00")
+    assert _load(tmp_path, good).get_channel_config("chn-alpha").weekly_digest_time.strftime("%H:%M") == "17:45"

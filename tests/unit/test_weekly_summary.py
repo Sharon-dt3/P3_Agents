@@ -97,9 +97,11 @@ class _ScriptedGateway:
     def __init__(self, texts: list[str]) -> None:
         self._texts = list(texts)
         self.calls = 0
+        self.prompts: list[str] = []
 
     def generate(self, prompt: str, **kwargs) -> LLMResponse:
         self.calls += 1
+        self.prompts.append(prompt)
         text = self._texts.pop(0)
         return LLMResponse(
             text=text, provider="anthropic", model="fake-model",
@@ -225,6 +227,27 @@ def test_a_channel_with_zero_traffic_produces_an_honest_empty_rollup(db_path):
     assert "No recurring blockers this week." in result.content
     assert "No decisions were taken this week." in result.content
     assert "No questions went unanswered all week." in result.content
+
+
+def test_rollup_shows_and_briefs_the_model_with_real_names_not_raw_ids(db_path):
+    """Live finding 2026-09-23: with raw ids in the model's briefing, the
+    model copied ids (which contain digits) into its sentence and the
+    no-digit validator rejected it three times, crashing the roll-up. The
+    roll-up must show a person's resolved name, both in its own text and
+    in what the model is handed."""
+    conn = get_connection(db_path)
+    conn.execute("UPDATE members SET display_name = 'Alice Example' WHERE id = 'alice'")
+    conn.commit()
+    conn.close()
+
+    gateway = _ScriptedGateway([_narrative("The team kept steady momentum through most of the week.")])
+    result = generate_weekly_rollup(CHANNEL_ID, WEEK_END, _config(), gateway, db_path=db_path)
+
+    assert "**Alice Example**" in result.content
+    assert "**alice**" not in result.content
+    briefing_prompts = [p for p in gateway.prompts if "Alice Example" in p]
+    assert briefing_prompts, "the model's briefing must carry the resolved name"
+    assert not any("- alice:" in p for p in gateway.prompts)
 
 
 # --- the narrative sentence: enforced, not merely requested, to carry no digit --

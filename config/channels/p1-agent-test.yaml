@@ -4,8 +4,8 @@ allowlisted: true
 
 roster:
   - "a52e61e5-16c6-4f6c-af67-f41f85e7a00a"  # Sharon Silva (SharonS@digitalt3.com) -- Graph reports author_id as the AAD object id, not the email; see DECISION_LOG.md CHN-25
-  - "230d27f7-dd11-407c-8822-8947f0068611"  # Himanshu Ranjan -- added 2026-09-21 after the thread-replies ingestion fix (see DECISION_LOG.md); auto-registered display_name is a placeholder (the AAD id itself) until ChannelMember.Read.All is granted, see CHN-01 follow-ups
-  - "442e9b43-e50a-446c-9c4b-e612e9036bd8"  # Esandu Obadaarachchi -- added 2026-09-21, same as above
+  - "230d27f7-dd11-407c-8822-8947f0068611"  # Esandu Obadaarachchi -- added 2026-09-21 after the thread-replies ingestion fix (see DECISION_LOG.md); auto-registered display_name is a placeholder (the AAD id itself) until ChannelMember.Read.All is granted, see CHN-01 follow-ups. CORRECTED 2026-09-23: this id was mislabeled "Himanshu Ranjan" from setup until a live Teams screenshot showed it is actually Esandu's real author_id -- see DECISION_LOG.md.
+  - "442e9b43-e50a-446c-9c4b-e612e9036bd8"  # Himanshu Ranjan -- added 2026-09-21, same as above. CORRECTED 2026-09-23: this id was mislabeled "Esandu Obadaarachchi" from setup -- see the entry above and DECISION_LOG.md.
 
 update_window_start: "08:00:00"  # TEMPORARY -- reopened to 08:00 so a message posted this morning counts, revert to 08:00:00 (already standard) after, see chat
 update_window_end: "17:30:00"  # matches daily_digest_time -- updates must land before the digest is generated
@@ -19,7 +19,7 @@ ignore_bots: true
 
 daily_digest_time: "17:30:00"
 weekly_digest_day: "Fri"
-weekly_digest_time: "16:00:00"
+weekly_digest_time: "17:45:00"  # after update_window_end AND the daily digest, so the week's last day is complete -- see DECISION_LOG.md, 2026-09-24
 
 nudge_enabled: true  # TEMPORARY -- enabled for a live nudge-flow test, revert to false after, see chat
 nudge_cap_per_day: 1

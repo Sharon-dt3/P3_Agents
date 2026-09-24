@@ -128,7 +128,7 @@ def test_the_chatter_only_member_is_never_reported_as_having_posted_no_message(d
     ClassificationStore(db_path).record(message_id="m-chatter", label="chatter", method="model", confidence=0.9)
 
     records = build_ledger(CHANNEL_ID, DAY, make_config(), db_path=db_path)
-    lines = render_participation_lines(records)
+    lines = render_participation_lines(records, db_path=db_path)
 
     bob_line = next(line for line in lines if line.startswith("bob"))
     assert bob_line == "bob — posted, but no update"
@@ -138,7 +138,7 @@ def test_the_chatter_only_member_is_never_reported_as_having_posted_no_message(d
 def test_the_on_leave_member_is_never_reported_as_silent(db_path):
     # dave has zero messages today and is on the exceptions list.
     records = build_ledger(CHANNEL_ID, DAY, make_config(), db_path=db_path)
-    lines = render_participation_lines(records)
+    lines = render_participation_lines(records, db_path=db_path)
 
     dave_line = next(line for line in lines if line.startswith("dave"))
     assert dave_line == "dave — excluded - on the exceptions list"
@@ -154,7 +154,7 @@ def test_the_configured_exception_reason_never_appears_in_the_rendered_output(db
     rendered line, not merely something this module promises not to
     do."""
     records = build_ledger(CHANNEL_ID, DAY, make_config(), db_path=db_path)
-    lines = render_participation_lines(records)
+    lines = render_participation_lines(records, db_path=db_path)
 
     assert not any("leave" in line.lower() for line in lines)
     assert not any("On leave" in line for line in lines)
@@ -173,7 +173,7 @@ def test_a_different_exception_reason_produces_byte_identical_wording(db_path):
         db_path=db_path,
     )
 
-    assert render_participation_lines(records_a) == render_participation_lines(records_b)
+    assert render_participation_lines(records_a, db_path=db_path) == render_participation_lines(records_b, db_path=db_path)
 
 
 # --- no ranking of people ----------------------------------------------------
@@ -199,7 +199,7 @@ def test_rendering_preserves_the_ledgers_own_order_never_resorting_by_state(db_p
 
 def test_render_participation_section_lists_every_non_responder_under_a_heading(db_path):
     records = build_ledger(CHANNEL_ID, DAY, make_config(), db_path=db_path)
-    section = render_participation_section(records)
+    section = render_participation_section(records, db_path=db_path)
 
     assert section[0] == "## Participation"
     assert section[-1] == ""

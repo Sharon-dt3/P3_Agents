@@ -67,6 +67,30 @@ class ChannelConfig(BaseModel):
             raise ValueError(f"Unknown day: {v}")
         return v
 
+    @field_validator("weekly_digest_time")
+    @classmethod
+    def _validate_weekly_time_after_the_days_work_is_done(cls, v, info):
+        """The weekly roll-up covers the week ending on weekly_digest_day.
+        If it fires before that day's update window closes, the last day's
+        participation is judged too early (someone posting at 16:45 would
+        count as silent) and the roll-up posts before that day's own daily
+        digest. It must therefore fire after both the window's end and the
+        daily digest. Found 2026-09-24 -- four real channels were configured
+        to fire 1.5-2 hours early. See DECISION_LOG.md."""
+        window_end = info.data.get("update_window_end")
+        daily_time = info.data.get("daily_digest_time")
+        if window_end is not None and v <= window_end:
+            raise ValueError(
+                f"weekly_digest_time ({v}) must be after update_window_end ({window_end}), "
+                "or the week's last day is summarised before its window has closed"
+            )
+        if daily_time is not None and v <= daily_time:
+            raise ValueError(
+                f"weekly_digest_time ({v}) must be after daily_digest_time ({daily_time}), "
+                "so the weekly roll-up never posts before that day's own digest"
+            )
+        return v
+
     @field_validator("update_window_end")
     @classmethod
     def _validate_window_order(cls, v, info):

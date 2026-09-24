@@ -88,7 +88,8 @@ from p1.governance.scope_gate import ScopedTeamsReader
 from p1.ingestion.sync import sync_channel, sync_channel_replies
 from p1.llm.gateway import LLMGateway
 from p1.nudges.nudge_job import run_nudge_job
-from p1.publishing.scheduler import build_scheduler
+from p1.publishing.scheduler import add_weekly_rollup_jobs, build_scheduler
+from p1.publishing.weekly_job import run_weekly_rollup_job
 from p1.storage.db import get_connection, init_db
 from p1.storage.messages_repo import MessageStore
 from p1.storage.sync_state import SyncStateStore
@@ -283,6 +284,19 @@ def _run_nudges_and_escalations(*, publisher, db_path: str) -> None:
         _log(f"[escalation] FAILED -- {type(exc).__name__}: {exc}")
 
 
+def _run_weekly_rollup(**kwargs) -> None:
+    """The weekly roll-up tick. Never raises -- a failed roll-up (a model
+    timeout, say) is logged here instead of disappearing inside
+    APScheduler, same reason _poll_ingest and the nudge tick never raise.
+    Fires once a week, so a failure is not retried on its own: re-run
+    scripts/run_live_weekly_p1_agent_test.py (idempotent) to retry."""
+    try:
+        result = run_weekly_rollup_job(**kwargs)
+        _log(f"[weekly] week ending {result.date}: {result.status} -- {result.detail}")
+    except Exception as exc:  # noqa: BLE001
+        _log(f"[weekly] FAILED -- {type(exc).__name__}: {exc}")
+
+
 def main() -> int:
     tenant_id = os.environ.get("AZURE_TENANT_ID")
     client_id = os.environ.get("AZURE_CLIENT_ID")
@@ -300,6 +314,7 @@ def main() -> int:
     _log(f"Starting live runner for {config.display_name} ({CHANNEL_ID})")
     _log(f"  ingest poll: every {INGEST_POLL_MINUTES} min")
     _log(f"  daily digest: {config.daily_digest_time} {config.timezone}, working days {config.working_days}")
+    _log(f"  weekly roll-up: {config.weekly_digest_day} {config.weekly_digest_time} {config.timezone}")
     _log(f"  nudge/escalation check: {config.update_window_end} {config.timezone} (end of update window)")
 
     # Seeds the token cache interactively, right here in the foreground,
@@ -316,6 +331,9 @@ def main() -> int:
     # The existing, already-tested production scheduler -- this is the
     # first caller anywhere in the codebase to actually .start() it.
     scheduler = build_scheduler([config], gateway, publisher, db_path=LIVE_DB_PATH)
+    add_weekly_rollup_jobs(
+        scheduler, [config], gateway, publisher, db_path=LIVE_DB_PATH, job_fn=_run_weekly_rollup,
+    )
 
     scheduler.add_job(
         _poll_ingest,

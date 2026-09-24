@@ -58,6 +58,7 @@ load_dotenv()
 from p1.approval import service as approval_service
 from p1.config.loader import ChannelConfigStore
 from p1.storage.db import DEFAULT_DB_PATH, get_connection
+from p1.storage.members_repo import resolve_display_name
 
 DB_PATH = os.environ.get("P1_DB_PATH", DEFAULT_DB_PATH)
 CURRENT_USER_ID = os.environ.get("P1_APPROVER_ID", "priya")
@@ -96,7 +97,14 @@ if not pending:
 for approval in pending:
     with st.container():
         friendly_name = _display_name(approval.channel_id)
-        st.write(f"**{approval.type}** -- {approval.summary.replace(approval.channel_id, friendly_name)}")
+        summary_text = approval.summary.replace(approval.channel_id, friendly_name)
+        # Same display-only swap for the person a nudge/escalation is about: a
+        # human approver must be able to see WHO they are about to message,
+        # not an Azure AD object id. Only what is printed changes.
+        member_id = approval.payload.get("member_id")
+        if member_id:
+            summary_text = summary_text.replace(member_id, resolve_display_name(member_id, db_path=DB_PATH))
+        st.write(f"**{approval.type}** -- {summary_text}")
         created_display = approval.created_at.split(".")[0].replace("T", " ") + " UTC"
         st.caption(
             f"proposal_id={approval.proposal_id[:8]}… · channel={friendly_name} · created={created_display}"

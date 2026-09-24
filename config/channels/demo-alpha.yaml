@@ -4,8 +4,8 @@ allowlisted: true
 
 roster:
   - "a52e61e5-16c6-4f6c-af67-f41f85e7a00a"  # Sharon Silva (SharonS@digitalt3.com) -- the contributor: posts real updates during the demo, drives the daily summary + permalink beat
-  - "230d27f7-dd11-407c-8822-8947f0068611"  # Himanshu Ranjan -- posts something that doesn't count as an update (posted_no_update), and is the person whose nudge gets REJECTED live
-  - "442e9b43-e50a-446c-9c4b-e612e9036bd8"  # Esandu Obadaarachchi -- stays silent (no_message); nudge gets APPROVED live, and this is the person whose streak becomes the escalation evidence bundle once enough consecutive missed days have passed
+  - "230d27f7-dd11-407c-8822-8947f0068611"  # Esandu Obadaarachchi -- posts something that doesn't count as an update (posted_no_update), and is the person whose nudge gets REJECTED live. CORRECTED 2026-09-23: this id was mislabeled "Himanshu Ranjan" -- see DECISION_LOG.md and p1-agent-test.yaml's own correction.
+  - "442e9b43-e50a-446c-9c4b-e612e9036bd8"  # Himanshu Ranjan -- stays silent (no_message); nudge gets APPROVED live, and this is the person whose streak becomes the escalation evidence bundle once enough consecutive missed days have passed. CORRECTED 2026-09-23: this id was mislabeled "Esandu Obadaarachchi" -- see DECISION_LOG.md and p1-agent-test.yaml's own correction.
   - "00000000-0000-0000-0000-000000000001"  # synthetic placeholder -- never posts, exists only to demonstrate the EXCLUDED ledger state via the exceptions entry below
 
 update_window_start: "09:00:00"
@@ -20,7 +20,7 @@ ignore_bots: true
 
 daily_digest_time: "17:30:00"
 weekly_digest_day: "Fri"
-weekly_digest_time: "16:00:00"
+weekly_digest_time: "17:45:00"  # after update_window_end AND the daily digest, so the week's last day is complete -- see DECISION_LOG.md, 2026-09-24
 
 nudge_enabled: true
 nudge_cap_per_day: 1

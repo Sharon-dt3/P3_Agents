@@ -17,7 +17,7 @@ ignore_bots: true
 
 daily_digest_time: "17:30:00"
 weekly_digest_day: "Fri"
-weekly_digest_time: "16:00:00"
+weekly_digest_time: "17:45:00"  # after update_window_end AND the daily digest, so the week's last day is complete -- see DECISION_LOG.md, 2026-09-24
 
 nudge_enabled: false  # deliberately off here, on for demo-alpha -- the two channels showing different config is itself part of the "per-channel config" story
 nudge_cap_per_day: 1

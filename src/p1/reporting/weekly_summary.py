@@ -27,6 +27,9 @@ validator, not just a prompt instruction.
 
 from __future__ import annotations
 
+import html
+import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date as date_type
 from pathlib import Path
@@ -45,6 +48,16 @@ from p1.reporting.weekly_facts import (
 )
 from p1.storage.db import DEFAULT_DB_PATH, get_connection
 from p1.storage.digests_repo import DigestStore
+from p1.storage.members_repo import resolve_display_name
+
+# Renders a member_id as a person's name. The default is the raw id, so a
+# caller with no members table (a unit test) is unchanged; the real
+# generate_weekly_rollup() passes a db-backed resolver.
+NameOf = Callable[[str], str]
+
+
+def _raw_id(member_id: str) -> str:
+    return member_id
 
 WEEKLY_ROLLUP_CAPABILITY = "chn19_weekly_narrative"
 
@@ -73,6 +86,13 @@ class WeeklyRollupResult:
     content: str
 
 
+def _plain(body: str) -> str:
+    """A quoted message as readable text: Teams stores bodies as HTML
+    (<p>...</p>, &nbsp;), which would otherwise print as literal markup
+    in the roll-up. Display only -- the stored body is never changed."""
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", body or ""))).strip()
+
+
 def _format_pct(rate: float) -> str:
     return f"{round(rate * 100)}%"
 
@@ -89,35 +109,37 @@ def _format_trend(trend: ParticipationTrend) -> str:
     return f"no change from last week ({prior_pct})"
 
 
-def _render_participation(facts: WeeklyFacts) -> list[str]:
+def _render_participation(facts: WeeklyFacts, name_of: NameOf = _raw_id) -> list[str]:
     lines = ["## Participation", ""]
     for member_id in sorted(facts.participation):
         trend = facts.participation[member_id]
         current = trend.current
         if current.rate is None:
-            lines.append(f"- **{member_id}**: no working days this week to measure")
+            lines.append(f"- **{name_of(member_id)}**: no working days this week to measure")
             continue
         lines.append(
-            f"- **{member_id}**: {_format_pct(current.rate)} "
+            f"- **{name_of(member_id)}**: {_format_pct(current.rate)} "
             f"({current.contributed_days} of {current.working_days} working days) "
             f"— {_format_trend(trend)}"
         )
     for excluded in facts.excluded_members:
-        lines.append(f"- **{excluded.member_id}**: excluded ({excluded.reason})")
+        lines.append(f"- **{name_of(excluded.member_id)}**: excluded ({excluded.reason})")
     lines.append("")
     return lines
 
 
-def _render_recurring_blockers(blockers: list[RecurringBlocker], body_by_id: dict[str, str]) -> list[str]:
+def _render_recurring_blockers(
+    blockers: list[RecurringBlocker], body_by_id: dict[str, str], name_of: NameOf = _raw_id,
+) -> list[str]:
     lines = ["## Recurring blockers", ""]
     if not blockers:
         lines.append("No recurring blockers this week.")
     else:
         for blocker in blockers:
             days_str = ", ".join(blocker.days)
-            lines.append(f"- **{blocker.author_id}** raised a blocker on more than one day this week ({days_str}):")
+            lines.append(f"- **{name_of(blocker.author_id)}** raised a blocker on more than one day this week ({days_str}):")
             for message_id in blocker.message_ids:
-                lines.append(f'  - "{body_by_id[message_id]}"')
+                lines.append(f'  - "{_plain(body_by_id[message_id])}"')
     lines.append("")
     return lines
 
@@ -128,12 +150,12 @@ def _render_fact_list(title: str, facts: list[WeeklyFact], empty_text: str) -> l
         lines.append(empty_text)
     else:
         for fact in facts:
-            lines.append(f'- {fact.date}: "{fact.body_raw}" ([source]({fact.permalink}))')
+            lines.append(f'- {fact.date}: "{_plain(fact.body_raw)}" ([source]({fact.permalink}))')
     lines.append("")
     return lines
 
 
-def _render_briefing_block(facts: WeeklyFacts) -> str:
+def _render_briefing_block(facts: WeeklyFacts, name_of: NameOf = _raw_id) -> str:
     """The model-facing summary of everything already computed -- this
     MAY include numbers (the model needs real context to write a
     relevant sentence), the rule is only that its OWN output sentence
@@ -143,9 +165,9 @@ def _render_briefing_block(facts: WeeklyFacts) -> str:
         trend = facts.participation[member_id]
         current = trend.current
         rate_str = _format_pct(current.rate) if current.rate is not None else "n/a"
-        lines.append(f"- {member_id}: {rate_str} this week ({_format_trend(trend)})")
+        lines.append(f"- {name_of(member_id)}: {rate_str} this week ({_format_trend(trend)})")
     for excluded in facts.excluded_members:
-        lines.append(f"- {excluded.member_id}: excluded this week ({excluded.reason})")
+        lines.append(f"- {name_of(excluded.member_id)}: excluded this week ({excluded.reason})")
     lines.append(f"- recurring blockers: {len(facts.recurring_blockers)} author(s)")
     lines.append(f"- decisions taken: {len(facts.decisions)}")
     lines.append(f"- questions unanswered all week: {len(facts.unanswered_questions)}")
@@ -163,9 +185,12 @@ def generate_weekly_rollup(
 ) -> WeeklyRollupResult:
     facts = gather_weekly_facts(channel_id, week_end, config, db_path=db_path)
 
+    def name_of(member_id: str) -> str:
+        return resolve_display_name(member_id, db_path=db_path)
+
     registry = prompt_registry or PromptRegistry()
     prompt: Prompt = registry.get(WEEKLY_ROLLUP_CAPABILITY)
-    briefing_block = _render_briefing_block(facts)
+    briefing_block = _render_briefing_block(facts, name_of)
     rendered_prompt = prompt.render(briefing_block=briefing_block)
     draft = generate_structured(
         gateway, rendered_prompt, WeeklyNarrativeDraft, tool_name="weekly_narrative",
@@ -178,8 +203,8 @@ def generate_weekly_rollup(
     }
 
     parts = [f"# {config.display_name} — Weekly Roll-up ({facts.week_start} to {facts.week_end})", ""]
-    parts.extend(_render_participation(facts))
-    parts.extend(_render_recurring_blockers(facts.recurring_blockers, body_by_id))
+    parts.extend(_render_participation(facts, name_of))
+    parts.extend(_render_recurring_blockers(facts.recurring_blockers, body_by_id, name_of))
     parts.extend(_render_fact_list("Decisions this week", facts.decisions, "No decisions were taken this week."))
     parts.extend(
         _render_fact_list(

@@ -1,0 +1,25 @@
+# Manually-confirmed real display names for Azure AD object ids, kept
+# as versioned config rather than a one-off DB patch -- see
+# DECISION_LOG.md, 2026-09-23 ("p1-agent-test's Himanshu/Esandu roster
+# labels were swapped").
+#
+# Why this file exists: Graph's delta message payload only ever gives a
+# sender's AAD object id reliably (see
+# p1.storage.messages_repo._ensure_member_exists's own docstring), so a
+# never-before-seen author_id is registered with itself as a placeholder
+# display_name. Resolving the REAL name needs either ChannelMember.Read.All
+# (not yet granted -- confirmed by a live 403 the same day this file was
+# added) or a human who actually knows the person, cross-checked against
+# real evidence (a live Teams screenshot, in this file's first three
+# entries' case) -- this file is that second path, recorded durably
+# instead of typed into a one-off SQL UPDATE that a fresh `data/` would
+# silently lose.
+#
+# p1.storage.members_repo.apply_known_names() applies this file's entries
+# to any `members` row whose display_name is still exactly its own id
+# (the placeholder) -- never overwriting a name a real Graph sync
+# resolves in the future. Format: member_id: "Real Display Name".
+
+a52e61e5-16c6-4f6c-af67-f41f85e7a00a: "Sharon Silva"
+230d27f7-dd11-407c-8822-8947f0068611: "Esandu Obadaarachchi"
+442e9b43-e50a-446c-9c4b-e612e9036bd8: "Himanshu Ranjan"

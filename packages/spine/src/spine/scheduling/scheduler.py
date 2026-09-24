@@ -93,31 +93,21 @@ def is_due(spec: ScheduleSpec, moment: datetime) -> bool:
     return local.hour == spec.scheduled_time.hour and local.minute == spec.scheduled_time.minute
 
 
-def build_scheduler(
+def add_scheduled_jobs(
+    scheduler: BackgroundScheduler,
     configs: list[T],
     to_spec: Callable[[T], ScheduleSpec],
     job_fn: Callable[..., None],
     job_kwargs: Callable[[T], dict],
 ) -> BackgroundScheduler:
-    """The real production scheduler: one CronTrigger per config,
-    firing at that config's own local scheduled_time on its own working
-    days, in its own timezone -- so several schedules in several
-    timezones each fire at their own correct wall-clock moment without
-    this process ever converting anything to a shared reference time
-    itself.
-
-    `to_spec` turns one of the caller's own config objects into a
-    ScheduleSpec (the only part of this function that knows anything
-    about the caller's config shape). `job_kwargs` builds that config's
-    own kwargs dict for job_fn -- also entirely the caller's concern;
-    this module never inspects job_fn's signature.
-
-    Callers add further jobs and start() the returned scheduler;
-    nothing here starts it, so tests can inspect the wiring without
-    ever running a real background thread."""
+    """Adds one CronTrigger job per config to an EXISTING scheduler --
+    the job-wiring half of build_scheduler(), split out so a caller that
+    already owns a scheduler (e.g. a live runner that also has ingest and
+    nudge jobs) can add a second kind of schedule (weekly, say) without
+    duplicating any of this. Behaviour is exactly what build_scheduler()
+    always did per config; returns the same scheduler for chaining."""
     from zoneinfo import ZoneInfo
 
-    scheduler = BackgroundScheduler()
     for config in configs:
         spec = to_spec(config)
         day_of_week = ",".join(
@@ -142,3 +132,28 @@ def build_scheduler(
             misfire_grace_time=6 * 3600,
         )
     return scheduler
+
+
+def build_scheduler(
+    configs: list[T],
+    to_spec: Callable[[T], ScheduleSpec],
+    job_fn: Callable[..., None],
+    job_kwargs: Callable[[T], dict],
+) -> BackgroundScheduler:
+    """The real production scheduler: one CronTrigger per config,
+    firing at that config's own local scheduled_time on its own working
+    days, in its own timezone -- so several schedules in several
+    timezones each fire at their own correct wall-clock moment without
+    this process ever converting anything to a shared reference time
+    itself.
+
+    `to_spec` turns one of the caller's own config objects into a
+    ScheduleSpec (the only part of this function that knows anything
+    about the caller's config shape). `job_kwargs` builds that config's
+    own kwargs dict for job_fn -- also entirely the caller's concern;
+    this module never inspects job_fn's signature.
+
+    Callers add further jobs and start() the returned scheduler;
+    nothing here starts it, so tests can inspect the wiring without
+    ever running a real background thread."""
+    return add_scheduled_jobs(BackgroundScheduler(), configs, to_spec, job_fn, job_kwargs)

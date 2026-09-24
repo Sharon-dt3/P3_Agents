@@ -179,6 +179,8 @@ def _render_digest_markdown(
     section_lines: dict[str, list[FactualLine]],
     permalink_by_id: dict[str, str],
     participation: list[ParticipationRecord],
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
 ) -> str:
     parts = [f"# {display_name} — Daily Summary ({day.isoformat()})", ""]
 
@@ -193,7 +195,7 @@ def _render_digest_markdown(
                 parts.append(f"- {line.text} ([source]({permalink}))")
         parts.append("")
 
-    parts.extend(render_participation_section(participation))
+    parts.extend(render_participation_section(participation, db_path=db_path))
 
     return "\n".join(parts)
 
@@ -224,7 +226,7 @@ def generate_daily_summary(
     participation = build_ledger(channel_id, day, config, db_path=db_path)
 
     content = _render_digest_markdown(
-        config.display_name, day, section_lines, permalink_by_id, participation,
+        config.display_name, day, section_lines, permalink_by_id, participation, db_path=db_path,
     )
 
     return DailySummaryResult(

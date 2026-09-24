@@ -29,14 +29,16 @@ from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from spine.scheduling.scheduler import ScheduleSpec
+from spine.scheduling.scheduler import add_scheduled_jobs as _spine_add_scheduled_jobs
 from spine.scheduling.scheduler import build_scheduler as _spine_build_scheduler
 from spine.scheduling.scheduler import is_due as _spine_is_due
 
 from p1.config.schema import ChannelConfig
 from p1.publishing.daily_job import run_daily_digest_job
+from p1.publishing.weekly_job import run_weekly_rollup_job
 from p1.storage.db import DEFAULT_DB_PATH
 
-__all__ = ["is_due", "build_scheduler"]
+__all__ = ["is_due", "build_scheduler", "add_weekly_rollup_jobs", "is_weekly_due"]
 
 
 def _to_spec(config: ChannelConfig) -> ScheduleSpec:
@@ -77,6 +79,55 @@ def build_scheduler(
         configs,
         to_spec=_to_spec,
         job_fn=run_daily_digest_job,
+        job_kwargs=lambda config: {
+            "channel_id": config.channel_id,
+            "config": config,
+            "gateway": gateway,
+            "publisher": publisher,
+            "db_path": db_path,
+        },
+    )
+
+
+def _to_weekly_spec(config: ChannelConfig) -> ScheduleSpec:
+    """The weekly roll-up's clock: exactly one day a week
+    (config.weekly_digest_day) at config.weekly_digest_time, in the
+    channel's own timezone -- the same ScheduleSpec shape the daily
+    digest uses, with `working_days` carrying just that one day."""
+    return ScheduleSpec(
+        job_id=f"weekly_rollup:{config.channel_id}",
+        timezone=config.timezone,
+        working_days=[config.weekly_digest_day],
+        non_working_dates=config.non_working_dates,
+        scheduled_time=config.weekly_digest_time,
+    )
+
+
+def is_weekly_due(config: ChannelConfig, moment: datetime) -> bool:
+    """True iff `moment`, in this channel's local time, is exactly its
+    weekly_digest_day at weekly_digest_time (and not a non_working_date)."""
+    return _spine_is_due(_to_weekly_spec(config), moment)
+
+
+def add_weekly_rollup_jobs(
+    scheduler: BackgroundScheduler,
+    configs: list[ChannelConfig],
+    gateway,
+    publisher,
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+    job_fn=run_weekly_rollup_job,
+) -> BackgroundScheduler:
+    """Adds one weekly roll-up job per channel to an EXISTING scheduler
+    (a live runner's, which already has the daily digest, ingest and
+    nudge jobs). `job_fn` defaults to the real run_weekly_rollup_job; a
+    live runner passes a thin never-raises wrapper around it so a failed
+    roll-up is logged rather than lost inside APScheduler."""
+    return _spine_add_scheduled_jobs(
+        scheduler,
+        configs,
+        to_spec=_to_weekly_spec,
+        job_fn=job_fn,
         job_kwargs=lambda config: {
             "channel_id": config.channel_id,
             "config": config,
