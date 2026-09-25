@@ -6222,3 +6222,15 @@ A direct `GET /users/{id}` for both ids was attempted live against the real tena
 **Cost, stated plainly.** A refresh re-fetches replies for every known thread (one Graph call each, existing behaviour of the poll tick): measured live, ~63s for `p1-agent-test` (49 threads) and ~16s for `Teams-agent-test` (11), so each digest is generated about that much later than the scheduled minute, and this grows with thread count. If a refresh is permanently impossible (Graph auth revoked, a long outage) no digest posts until it works -- by design, and loudly (`[digest] attempt N/3 FAILED ...`, then `[catch-up] FAILED, will retry next tick` every 5 minutes).
 
 **Verified.** 9 new tests: the refresh runs before every attempt; if it fails the job is never called (bug-injected -- swallowing the failure makes two tests fail); once the network is back the retry refreshes then publishes; the catch-up receives the hook and runs it once, only when something is overdue, and publishes nothing if it fails; the poll tick still never raises, skips the mirror on failure, and reports an auth problem as SKIPPED. `uv run pytest tests/unit -q`: 541 passed; spine: 25 passed. Live: each runner's new `_ingest_and_classify` ran against the real Teams tenant and database without raising. Not done: bounding the reply re-fetch to recent threads (would cut the ~1 minute) -- worth doing before thread counts grow much further.
+
+## 2026-09-25 -- A "posted, but no update" line now links the message it is based on
+
+**Gap.** The participation section of a digest said "Esandu Obadaarachchi -- posted, but no update" with nothing to check it against. The classifier decides whether a message counts as an update, and it can be wrong; every other digest line cites its source, this one did not.
+
+**Change.** `render_participation_lines` (`src/p1/reporting/participation_rendering.py`) appends `([source](permalink))` to POSTED_NO_UPDATE lines only, using the evidence message ids the ledger already stores and the `permalink` column of `messages`. Several messages are linked oldest first, capped at 3 (`MAX_SOURCES_PER_LINE`). NO_MESSAGE and EXCLUDED lines have nothing to cite and are unchanged.
+
+**What did not change.** The three wording phrases in `PARTICIPATION_WORDING` are untouched (the pinned test still passes), the order is still the ledger's own member_id order, and no reason, adjective or count is added. The link is display only: a missing database, a missing message row or an empty permalink leaves the line exactly as it was before, never an error.
+
+**Verified.** 5 new tests in `tests/unit/test_participation_rendering.py` (link present; only posted_no_update gets one; oldest-first and capped at 3; no permalink means plain; missing database means plain). Full suite: 546 unit and 25 spine tests pass.
+
+**Scope.** Affects digests generated after the runners restart; already published digests are not rewritten. Not done from the same list of ideas: showing the classifier label per message, a "who did contribute" count, and deleting stale rows from the stored `participation` table.

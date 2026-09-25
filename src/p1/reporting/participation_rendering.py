@@ -46,6 +46,7 @@ digest assembly, where CHN-13 originally put it -- for two reasons:
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from p1.participation.ledger import (
@@ -54,7 +55,7 @@ from p1.participation.ledger import (
     POSTED_NO_UPDATE,
     ParticipationRecord,
 )
-from p1.storage.db import DEFAULT_DB_PATH
+from p1.storage.db import DEFAULT_DB_PATH, get_connection
 from p1.storage.members_repo import resolve_display_name
 
 # The exact three-state wording the WBS row itself specifies. A manager
@@ -69,6 +70,48 @@ PARTICIPATION_WORDING = {
 _FALLBACK_LINE = "Every roster member contributed an update today."
 
 
+# A posted_no_update line cites the member's own message(s), the same
+# "([source](permalink))" form every other digest line uses, so a
+# manager can check the classifier's call in one click. Capped so a
+# chatty member cannot make one line unreadable.
+MAX_SOURCES_PER_LINE = 3
+
+
+def _permalinks(message_ids: tuple[str, ...], *, db_path: str | Path) -> list[str]:
+    """Permalinks of the given messages, oldest first. Display only: a
+    missing db, a missing row or an empty permalink yields nothing, so
+    the line falls back to its plain wording exactly as before."""
+    if not message_ids:
+        return []
+    try:
+        conn = get_connection(db_path)
+    except sqlite3.Error:
+        return []
+    try:
+        placeholders = ", ".join("?" for _ in message_ids)
+        rows = conn.execute(
+            f"SELECT permalink FROM messages WHERE id IN ({placeholders}) "
+            "AND permalink IS NOT NULL AND permalink != '' ORDER BY posted_at, id",
+            list(message_ids),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    return [row["permalink"] for row in rows][:MAX_SOURCES_PER_LINE]
+
+
+def _source_suffix(record: ParticipationRecord, *, db_path: str | Path) -> str:
+    """Only POSTED_NO_UPDATE has messages to cite. NO_MESSAGE and EXCLUDED
+    have no evidence by definition, so their lines are never touched."""
+    if record.state != POSTED_NO_UPDATE:
+        return ""
+    links = _permalinks(record.evidence_message_ids, db_path=db_path)
+    if not links:
+        return ""
+    return " (" + ", ".join(f"[source]({link})" for link in links) + ")"
+
+
 def render_participation_lines(
     records: list[ParticipationRecord], *, db_path: str | Path = DEFAULT_DB_PATH,
 ) -> list[str]:
@@ -77,9 +120,12 @@ def render_participation_lines(
     Each member_id is resolved to a real display name via
     resolve_display_name() when one is known (see that function's own
     docstring); falls back to the bare id otherwise, exactly the
-    previous behaviour -- see DECISION_LOG.md, 2026-09-23."""
+    previous behaviour -- see DECISION_LOG.md, 2026-09-23. A
+    posted_but_no_update line also links the message(s) it is based on
+    -- see DECISION_LOG.md, 2026-09-25."""
     return [
-        f"{resolve_display_name(record.member_id, db_path=db_path)} — {PARTICIPATION_WORDING[record.state]}"
+        f"{resolve_display_name(record.member_id, db_path=db_path)} — "
+        f"{PARTICIPATION_WORDING[record.state]}{_source_suffix(record, db_path=db_path)}"
         for record in records
     ]
 

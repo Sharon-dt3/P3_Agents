@@ -215,3 +215,65 @@ def test_render_participation_section_with_no_non_responders_reads_the_honest_fa
         "- Every roster member contributed an update today.",
         "",
     ]
+
+
+# --- posted_no_update lines cite their own message(s) ------------------------
+
+def _chatter(db_path, *, id, author_id, posted_at, permalink):
+    message = _message(id=id, author_id=author_id, posted_at=posted_at, body="Thanks all, sounds good!", permalink=permalink)
+    MessageStore(db_path).upsert_messages([message])
+    ClassificationStore(db_path).record(message_id=id, label="chatter", method="model", confidence=0.9)
+
+
+def test_a_posted_no_update_line_links_the_message_it_is_based_on(db_path):
+    _chatter(db_path, id="m-chatter", author_id="bob", posted_at="2025-06-02T09:30:00+05:30", permalink="https://teams.example/m-chatter")
+
+    records = build_ledger(CHANNEL_ID, DAY, make_config(), db_path=db_path)
+    lines = render_participation_lines(records, db_path=db_path)
+
+    assert "bob — posted, but no update ([source](https://teams.example/m-chatter))" in lines
+
+
+def test_only_posted_no_update_lines_get_a_source_link(db_path):
+    _chatter(db_path, id="m-chatter", author_id="bob", posted_at="2025-06-02T09:30:00+05:30", permalink="https://teams.example/m-chatter")
+
+    records = build_ledger(CHANNEL_ID, DAY, make_config(), db_path=db_path)
+    lines = render_participation_lines(records, db_path=db_path)
+
+    assert "carol — no message posted" in lines
+    assert "dave — excluded - on the exceptions list" in lines
+    assert not any("source" in line for line in lines if line.startswith(("carol", "dave")))
+
+
+def test_several_messages_are_linked_oldest_first_and_capped_at_three(db_path):
+    for index, minute in enumerate(("40", "10", "30", "20"), start=1):
+        _chatter(
+            db_path, id=f"m{index}", author_id="bob", posted_at=f"2025-06-02T09:{minute}:00+05:30",
+            permalink=f"https://teams.example/m{index}",
+        )
+
+    records = build_ledger(CHANNEL_ID, DAY, make_config(), db_path=db_path)
+    line = next(l for l in render_participation_lines(records, db_path=db_path) if l.startswith("bob"))
+
+    # 09:10 (m2), 09:20 (m4), 09:30 (m3) are the three oldest; 09:40 (m1) is cut
+    assert line == (
+        "bob — posted, but no update "
+        "([source](https://teams.example/m2), [source](https://teams.example/m4), [source](https://teams.example/m3))"
+    )
+
+
+def test_a_message_with_no_permalink_leaves_the_line_plain(db_path):
+    _chatter(db_path, id="m-chatter", author_id="bob", posted_at="2025-06-02T09:30:00+05:30", permalink=None)
+
+    records = build_ledger(CHANNEL_ID, DAY, make_config(), db_path=db_path)
+    lines = render_participation_lines(records, db_path=db_path)
+
+    assert "bob — posted, but no update" in lines
+
+
+def test_a_missing_database_leaves_the_line_plain_instead_of_failing(tmp_path):
+    records = [
+        ParticipationRecord(channel_id=CHANNEL_ID, member_id="b", date=DAY.isoformat(), state=POSTED_NO_UPDATE, evidence_message_ids=("m1",)),
+    ]
+
+    assert render_participation_lines(records, db_path=str(tmp_path / "does-not-exist.db")) == ["b — posted, but no update"]
