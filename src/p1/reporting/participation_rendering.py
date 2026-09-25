@@ -70,17 +70,18 @@ PARTICIPATION_WORDING = {
 _FALLBACK_LINE = "Every roster member contributed an update today."
 
 
-# A posted_no_update line cites the member's own message(s), the same
-# "([source](permalink))" form every other digest line uses, so a
-# manager can check the classifier's call in one click. Capped so a
-# chatty member cannot make one line unreadable.
+# A posted_no_update line says what the member's message(s) were labelled
+# and links them, the same "([source](permalink))" form every other digest
+# line uses, so a manager can check the classifier's call in one click.
+# Both are facts read straight from the database, not inferred reasons.
+# The links are capped so a chatty member cannot make one line unreadable.
 MAX_SOURCES_PER_LINE = 3
 
 
-def _permalinks(message_ids: tuple[str, ...], *, db_path: str | Path) -> list[str]:
-    """Permalinks of the given messages, oldest first. Display only: a
-    missing db, a missing row or an empty permalink yields nothing, so
-    the line falls back to its plain wording exactly as before."""
+def _evidence(message_ids: tuple[str, ...], *, db_path: str | Path) -> list[tuple[str | None, str | None]]:
+    """(label, permalink) of each given message, oldest first. Display
+    only: a missing db or row yields nothing, so the line falls back to
+    its plain wording exactly as before."""
     if not message_ids:
         return []
     try:
@@ -90,26 +91,37 @@ def _permalinks(message_ids: tuple[str, ...], *, db_path: str | Path) -> list[st
     try:
         placeholders = ", ".join("?" for _ in message_ids)
         rows = conn.execute(
-            f"SELECT permalink FROM messages WHERE id IN ({placeholders}) "
-            "AND permalink IS NOT NULL AND permalink != '' ORDER BY posted_at, id",
+            f"SELECT m.permalink AS permalink, c.label AS label FROM messages m "
+            f"LEFT JOIN classifications c ON c.message_id = m.id "
+            f"WHERE m.id IN ({placeholders}) ORDER BY m.posted_at, m.id",
             list(message_ids),
         ).fetchall()
     except sqlite3.Error:
         return []
     finally:
         conn.close()
-    return [row["permalink"] for row in rows][:MAX_SOURCES_PER_LINE]
+    return [(row["label"], row["permalink"] or None) for row in rows]
 
 
-def _source_suffix(record: ParticipationRecord, *, db_path: str | Path) -> str:
-    """Only POSTED_NO_UPDATE has messages to cite. NO_MESSAGE and EXCLUDED
-    have no evidence by definition, so their lines are never touched."""
+def _evidence_suffix(record: ParticipationRecord, *, db_path: str | Path) -> str:
+    """Only POSTED_NO_UPDATE has messages to describe. NO_MESSAGE and
+    EXCLUDED have no evidence by definition, so their lines are never
+    touched."""
     if record.state != POSTED_NO_UPDATE:
         return ""
-    links = _permalinks(record.evidence_message_ids, db_path=db_path)
-    if not links:
+    evidence = _evidence(record.evidence_message_ids, db_path=db_path)
+    if not evidence:
         return ""
-    return " (" + ", ".join(f"[source]({link})" for link in links) + ")"
+    count = len(evidence)
+    description = f"{count} message" if count == 1 else f"{count} messages"
+    labels = list(dict.fromkeys(label for label, _ in evidence if label))
+    if labels:
+        description += f", labelled {', '.join(labels)}"
+    suffix = f" ({description})"
+    links = [link for _, link in evidence if link][:MAX_SOURCES_PER_LINE]
+    if links:
+        suffix += " (" + ", ".join(f"[source]({link})" for link in links) + ")"
+    return suffix
 
 
 def render_participation_lines(
@@ -121,17 +133,21 @@ def render_participation_lines(
     resolve_display_name() when one is known (see that function's own
     docstring); falls back to the bare id otherwise, exactly the
     previous behaviour -- see DECISION_LOG.md, 2026-09-23. A
-    posted_but_no_update line also links the message(s) it is based on
-    -- see DECISION_LOG.md, 2026-09-25."""
+    posted_but_no_update line also says how many messages it is based on,
+    what they were labelled, and links them -- see DECISION_LOG.md,
+    2026-09-25."""
     return [
         f"{resolve_display_name(record.member_id, db_path=db_path)} — "
-        f"{PARTICIPATION_WORDING[record.state]}{_source_suffix(record, db_path=db_path)}"
+        f"{PARTICIPATION_WORDING[record.state]}{_evidence_suffix(record, db_path=db_path)}"
         for record in records
     ]
 
 
 def render_participation_section(
-    records: list[ParticipationRecord], *, db_path: str | Path = DEFAULT_DB_PATH,
+    records: list[ParticipationRecord],
+    *,
+    db_path: str | Path = DEFAULT_DB_PATH,
+    roster_size: int | None = None,
 ) -> list[str]:
     """The full '## Participation' block of a digest, as a list of
     markdown lines ready to append to the rest of the digest. A day
@@ -140,6 +156,10 @@ def render_participation_section(
     lines = ["## Participation"]
     entries = render_participation_lines(records, db_path=db_path)
     if entries:
+        if roster_size is not None and roster_size >= len(records):
+            # Ledger records are only the non-responders, so everyone else
+            # on the roster contributed: computed, never estimated.
+            lines.append(f"- {roster_size - len(records)} of {roster_size} roster members posted an update.")
         lines.extend(f"- {entry}" for entry in entries)
     else:
         lines.append(f"- {_FALLBACK_LINE}")

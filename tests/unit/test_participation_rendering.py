@@ -131,7 +131,7 @@ def test_the_chatter_only_member_is_never_reported_as_having_posted_no_message(d
     lines = render_participation_lines(records, db_path=db_path)
 
     bob_line = next(line for line in lines if line.startswith("bob"))
-    assert bob_line == "bob — posted, but no update"
+    assert bob_line == "bob — posted, but no update (1 message, labelled chatter)"
     assert "no message posted" not in bob_line
 
 
@@ -231,7 +231,9 @@ def test_a_posted_no_update_line_links_the_message_it_is_based_on(db_path):
     records = build_ledger(CHANNEL_ID, DAY, make_config(), db_path=db_path)
     lines = render_participation_lines(records, db_path=db_path)
 
-    assert "bob — posted, but no update ([source](https://teams.example/m-chatter))" in lines
+    assert (
+        "bob — posted, but no update (1 message, labelled chatter) ([source](https://teams.example/m-chatter))" in lines
+    )
 
 
 def test_only_posted_no_update_lines_get_a_source_link(db_path):
@@ -257,7 +259,7 @@ def test_several_messages_are_linked_oldest_first_and_capped_at_three(db_path):
 
     # 09:10 (m2), 09:20 (m4), 09:30 (m3) are the three oldest; 09:40 (m1) is cut
     assert line == (
-        "bob — posted, but no update "
+        "bob — posted, but no update (4 messages, labelled chatter) "
         "([source](https://teams.example/m2), [source](https://teams.example/m4), [source](https://teams.example/m3))"
     )
 
@@ -268,7 +270,8 @@ def test_a_message_with_no_permalink_leaves_the_line_plain(db_path):
     records = build_ledger(CHANNEL_ID, DAY, make_config(), db_path=db_path)
     lines = render_participation_lines(records, db_path=db_path)
 
-    assert "bob — posted, but no update" in lines
+    assert "bob — posted, but no update (1 message, labelled chatter)" in lines
+    assert not any("source" in line for line in lines)
 
 
 def test_a_missing_database_leaves_the_line_plain_instead_of_failing(tmp_path):
@@ -277,3 +280,56 @@ def test_a_missing_database_leaves_the_line_plain_instead_of_failing(tmp_path):
     ]
 
     assert render_participation_lines(records, db_path=str(tmp_path / "does-not-exist.db")) == ["b — posted, but no update"]
+
+
+# --- the label shown on a posted_no_update line ------------------------------
+
+def test_each_distinct_label_is_listed_once_in_the_order_the_messages_were_posted(db_path):
+    for id, minute, label in (("m1", "10", "chatter"), ("m2", "20", "noise"), ("m3", "30", "chatter")):
+        MessageStore(db_path).upsert_messages([
+            _message(id=id, author_id="bob", posted_at=f"2025-06-02T09:{minute}:00+05:30", body="Thanks all, sounds good!"),
+        ])
+        ClassificationStore(db_path).record(message_id=id, label=label, method="model", confidence=0.9)
+
+    records = build_ledger(CHANNEL_ID, DAY, make_config(), db_path=db_path)
+    line = next(l for l in render_participation_lines(records, db_path=db_path) if l.startswith("bob"))
+
+    assert line == "bob — posted, but no update (3 messages, labelled chatter, noise)"
+
+
+def test_an_unclassified_message_is_counted_but_no_label_is_invented(db_path):
+    MessageStore(db_path).upsert_messages([_message(id="m1", author_id="bob", body="Thanks all, sounds good!")])
+
+    records = build_ledger(CHANNEL_ID, DAY, make_config(), db_path=db_path)
+    line = next(l for l in render_participation_lines(records, db_path=db_path) if l.startswith("bob"))
+
+    assert line == "bob — posted, but no update (1 message)"
+
+
+# --- "who did contribute" ------------------------------------------------------
+
+def test_the_section_says_how_many_of_the_roster_posted_an_update(db_path):
+    message = _message(id="m-update", author_id="alice", body="Finished the thing, running the tests now.")
+    MessageStore(db_path).upsert_messages([message])
+    ClassificationStore(db_path).record(message_id="m-update", label="update", method="model", confidence=0.9)
+
+    records = build_ledger(CHANNEL_ID, DAY, make_config(), db_path=db_path)
+    section = render_participation_section(records, db_path=db_path, roster_size=4)
+
+    assert section[1] == "- 1 of 4 roster members posted an update."
+    assert "- bob — no message posted" in section
+
+
+def test_the_count_line_is_left_out_when_no_roster_size_is_given(db_path):
+    records = build_ledger(CHANNEL_ID, DAY, make_config(), db_path=db_path)
+    section = render_participation_section(records, db_path=db_path)
+
+    assert not any("roster members posted" in line for line in section)
+
+
+def test_the_all_contributed_fallback_has_no_count_line():
+    assert render_participation_section([], roster_size=3) == [
+        "## Participation",
+        "- Every roster member contributed an update today.",
+        "",
+    ]
