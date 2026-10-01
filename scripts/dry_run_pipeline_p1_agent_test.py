@@ -55,7 +55,11 @@ from p1.storage.sync_state import SyncStateStore
 # than re-implementing scoped-reader construction or message reload --
 # see that module for what each one does.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from run_live_pipeline_p1_agent_test import CHANNEL_ID, _load_channel_messages, build_scoped_reader
+from run_live_pipeline_p1_agent_test import (
+    CHANNEL_ID,
+    _load_channel_messages,
+    build_scoped_reader,
+)
 
 LIVE_DB_PATH = "data/p1_live.db"
 

@@ -38,7 +38,7 @@ from p1.publishing.daily_job import run_daily_digest_job
 from p1.publishing.weekly_job import run_weekly_rollup_job
 from p1.storage.db import DEFAULT_DB_PATH
 
-__all__ = ["is_due", "build_scheduler", "add_weekly_rollup_jobs", "is_weekly_due"]
+__all__ = ["add_weekly_rollup_jobs", "build_scheduler", "is_due", "is_weekly_due"]
 
 
 def _to_spec(config: ChannelConfig) -> ScheduleSpec:

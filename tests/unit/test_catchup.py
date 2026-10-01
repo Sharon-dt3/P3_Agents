@@ -15,6 +15,7 @@ from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 import pytest
+from spine.approval.proposals import IllegalTransitionError
 
 from p1.approval.proposals import ProposalStore
 from p1.config.schema import ChannelConfig
@@ -22,7 +23,6 @@ from p1.publishing.catchup import overdue_daily, overdue_weekly, run_missed_publ
 from p1.publishing.daily_job import AUTO_APPROVE_APPROVER_ID
 from p1.storage.db import get_connection, init_db
 from p1.storage.digests_repo import DigestStore
-from spine.approval.proposals import IllegalTransitionError
 
 CH = "catchup-channel"
 TZ = ZoneInfo("Asia/Colombo")

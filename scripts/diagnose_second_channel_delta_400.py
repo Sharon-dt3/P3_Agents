@@ -34,7 +34,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from p1.adapters.graph_auth import get_access_token  # noqa: E402
+from p1.adapters.graph_auth import get_access_token
 
 TEAM_ID = os.environ["GRAPH_TEAM_ID"]
 CHANNEL_ID = "19:ID3C8qqqxb40IRhNJ3xvts2BWAgRac3SxYwm9XyBEGM1@thread.tacv2"  # Teams-agent-test

@@ -8,7 +8,6 @@ agent's naming.
 from __future__ import annotations
 
 from datetime import date, datetime, time, timezone
-from zoneinfo import ZoneInfo
 
 from spine.scheduling.scheduler import ScheduleSpec, build_scheduler, is_due
 

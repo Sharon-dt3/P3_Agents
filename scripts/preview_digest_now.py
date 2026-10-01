@@ -43,6 +43,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from run_live_pipeline_p1_agent_test import _load_channel_messages
+
 from p1.adapters.graph_auth import GraphAuthError, get_access_token
 from p1.adapters.teams_reader_graph import GraphTeamsReader
 from p1.config.calendar import to_local
@@ -56,7 +58,6 @@ from p1.reporting.daily_summary import generate_daily_summary
 from p1.storage.db import get_connection, init_db
 from p1.storage.messages_repo import MessageStore
 from p1.storage.sync_state import SyncStateStore
-from run_live_pipeline_p1_agent_test import _load_channel_messages
 
 LIVE_DB_PATH = "data/p1_live.db"
 CHANNELS = {

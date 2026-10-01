@@ -7,15 +7,15 @@ own fields back at itself.
 """
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pytest
 import yaml
 from pydantic import BaseModel
-
 from spine.config.store import ConfigNotFoundError, ConfigStore
-from spine.storage.db import DEFAULT_DB_PATH  # noqa: F401 -- documents the default exists
+from spine.storage.db import (
+    DEFAULT_DB_PATH,  # noqa: F401 -- documents the default exists
+)
 
 
 class ProjectConfig(BaseModel):

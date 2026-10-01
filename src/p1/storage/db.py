@@ -24,7 +24,7 @@ logger = logging.getLogger("p1.storage.db")
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
-__all__ = ["DEFAULT_DB_PATH", "MIGRATIONS_DIR", "get_connection", "run_migrations", "init_db"]
+__all__ = ["DEFAULT_DB_PATH", "MIGRATIONS_DIR", "get_connection", "init_db", "run_migrations"]
 
 
 def run_migrations(

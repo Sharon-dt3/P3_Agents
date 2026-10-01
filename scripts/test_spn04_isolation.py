@@ -29,8 +29,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "spine" / "src"))
 
-from p1.config.loader import ChannelConfigStore  # noqa: E402
-from p1.storage.db import get_connection  # noqa: E402
+from p1.config.loader import ChannelConfigStore
+from p1.storage.db import get_connection
 
 LIVE_DB_PATH = "data/p1_live.db"
 SNAPSHOT_PATH = Path("data/_spn04_isolation_snapshot.json")

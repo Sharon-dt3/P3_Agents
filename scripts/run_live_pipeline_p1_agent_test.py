@@ -84,7 +84,11 @@ from p1.governance.scope_gate import ScopedTeamsReader
 from p1.ingestion.sync import sync_channel
 from p1.llm.gateway import LLMGateway
 from p1.participation.ledger import build_and_persist_ledger
-from p1.publishing.daily_job import SKIPPED_NON_WORKING_DAY, JobResult, run_daily_digest_job
+from p1.publishing.daily_job import (
+    SKIPPED_NON_WORKING_DAY,
+    JobResult,
+    run_daily_digest_job,
+)
 from p1.storage.db import get_connection, init_db
 from p1.storage.messages_repo import MessageStore
 from p1.storage.sync_state import SyncStateStore

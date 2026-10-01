@@ -19,7 +19,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 import live_runner_p1_agent_test as runner
-
 from spine.llm.gateway import LLMGateway
 
 

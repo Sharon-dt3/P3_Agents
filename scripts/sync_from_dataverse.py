@@ -78,7 +78,7 @@ load_dotenv()
 import httpx
 import msal
 
-from p1.config.loader import ChannelConfigStore, DEFAULT_DB_PATH
+from p1.config.loader import DEFAULT_DB_PATH, ChannelConfigStore
 from p1.config.schema import ExceptionEntry
 
 # --- PLACEHOLDERS: fix these once the real table exists (see module docstring) ---

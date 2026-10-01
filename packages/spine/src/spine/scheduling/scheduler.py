@@ -33,10 +33,10 @@ its own job function does the same, without touching this file.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time
-from pathlib import Path
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger

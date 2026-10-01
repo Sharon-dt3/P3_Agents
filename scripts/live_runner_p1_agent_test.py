@@ -90,9 +90,9 @@ from p1.governance.scope_gate import ScopedTeamsReader
 from p1.ingestion.sync import sync_channel, sync_channel_replies
 from p1.llm.gateway import LLMGateway
 from p1.nudges.nudge_job import run_nudge_job
-from p1.publishing.scheduler import add_weekly_rollup_jobs, build_scheduler
 from p1.publishing.catchup import run_missed_publishing
 from p1.publishing.daily_job import run_daily_digest_job
+from p1.publishing.scheduler import add_weekly_rollup_jobs, build_scheduler
 from p1.publishing.weekly_job import run_weekly_rollup_job
 from p1.storage.db import get_connection, init_db
 from p1.storage.messages_repo import MessageStore
@@ -282,7 +282,7 @@ def _run_nudges_and_escalations(*, publisher, db_path: str) -> None:
         config = ChannelConfigStore().get_effective_config(CHANNEL_ID, db_path=db_path)
     except Exception as exc:  # noqa: BLE001
         _log(f"[nudge] FAILED -- could not load live config -- {type(exc).__name__}: {exc}")
-        _log(f"[escalation] SKIPPED -- config load failed this tick")
+        _log("[escalation] SKIPPED -- config load failed this tick")
         return
 
     try:

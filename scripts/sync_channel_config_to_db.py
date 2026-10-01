@@ -57,7 +57,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from p1.config.loader import ChannelConfigStore, DEFAULT_DB_PATH
+from p1.config.loader import DEFAULT_DB_PATH, ChannelConfigStore
 
 DB_PATH = os.environ.get("P1_DB_PATH", DEFAULT_DB_PATH)
 

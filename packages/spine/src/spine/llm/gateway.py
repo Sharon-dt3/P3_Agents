@@ -23,14 +23,14 @@ from typing import Any
 import httpx
 from anthropic import Anthropic, AnthropicBedrock, APIStatusError, RateLimitError
 from dotenv import load_dotenv
-
-from spine.prompts import PromptRegistry
 from tenacity import (
     Retrying,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
+
+from spine.prompts import PromptRegistry
 
 load_dotenv()
 

@@ -32,6 +32,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from run_live_pipeline_p1_agent_test import (
+    CHANNEL_ID,
+    LIVE_DB_PATH,
+    _load_channel_messages,
+)
+
 from p1.config.calendar import to_local
 from p1.config.loader import ChannelConfigStore
 from p1.detection.classifier import classify_message
@@ -39,7 +45,6 @@ from p1.detection.rules import evaluate_message
 from p1.llm.gateway import LLMGateway
 from p1.storage.db import get_connection
 from p1.storage.members_repo import resolve_display_name
-from run_live_pipeline_p1_agent_test import CHANNEL_ID, LIVE_DB_PATH, _load_channel_messages
 
 PROMPT_PATH = Path("prompts/chn09_classify_message/v1.md")
 CONTENT_LABELS = ("update", "question", "blocker", "decision")
@@ -53,7 +58,7 @@ def _label_definition(label: str) -> str:
     """The classifier prompt's own definition of this label, so the demo
     shows the criteria the model was actually given."""
     text = PROMPT_PATH.read_text()
-    match = re.search(rf"^- {label}:(.*?)(?=^- |\n\nAlongside)", text, re.S | re.M)
+    match = re.search(rf"^- {label}:(.*?)(?=^- |\n\nAlongside)", text, re.DOTALL | re.MULTILINE)
     return re.sub(r"\s+", " ", match.group(1)).strip() if match else ""
 
 

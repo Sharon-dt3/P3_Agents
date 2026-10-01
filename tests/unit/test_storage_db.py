@@ -37,5 +37,6 @@ def test_run_migrations_is_idempotent(tmp_path):
         "0004_nudges.sql",
         "0005_escalations.sql",
         "0006_messages_fts_sync.sql",
+        "0007_classification_points.sql",
     ]
     assert second_run == []

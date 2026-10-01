@@ -12,7 +12,11 @@ from collections.abc import Iterable
 
 from pydantic import BaseModel
 
-from p1.adapters.teams_reader import DeltaLinkRejectedError, DeltaTokenExpiredError, TeamsReader
+from p1.adapters.teams_reader import (
+    DeltaLinkRejectedError,
+    DeltaTokenExpiredError,
+    TeamsReader,
+)
 from p1.storage.messages_repo import MessageStore
 from p1.storage.sync_state import SyncStateStore
 

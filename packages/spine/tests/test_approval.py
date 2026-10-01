@@ -8,10 +8,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from spine.approval.proposals import APPLIED, PENDING, REJECTED, ProposalStore
 from spine.approval.write_guard import WriteRefusedError, guarded_send
-from spine.storage.db import run_migrations
 
 
 @pytest.fixture

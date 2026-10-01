@@ -331,7 +331,7 @@ def _beat_4_delta_and_fixture(db_path, channel_ids):
         if unexpected:
             print(f"  !! UNEXPECTED drift beyond the known CHN-28 gap: {sorted(unexpected)} -- investigate")
         else:
-            print(f"  every difference is exactly the known CHN-28 hand-added set -- no NEW drift")
+            print("  every difference is exactly the known CHN-28 hand-added set -- no NEW drift")
 
         with open(PROJECT_ROOT / "seed" / "fixtures" / "labels.csv") as f:
             committed_labels = {row[0] for row in _csv.reader(f)} - {"case_id"}
@@ -567,6 +567,7 @@ def _beat_10_escalation(config_store, alpha_config, publisher, db_path):
 def _beat_11_eval_harness():
     _beat(11, "The eval harness, run for real")
     import run_eval as eval_script  # scripts/run_eval.py, already on sys.path (SCRIPT_DIR)
+
     from p1.eval.cases import GoldenCaseRegistry
     from p1.eval.registrations import register_all
     from p1.eval.runner import run_eval

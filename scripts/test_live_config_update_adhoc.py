@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "spine" / "src"))
 
-from p1.config.loader import ChannelConfigStore  # noqa: E402
+from p1.config.loader import ChannelConfigStore
 
 CHANNEL_ID = "19:ZVl0BYQCKWi4_oXsG_tuu3F4p5HsgQGobGhAMiZD_ro1@thread.tacv2"
 LIVE_DB_PATH = "data/p1_live.db"

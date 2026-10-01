@@ -98,7 +98,7 @@ from p1.participation.ledger import (
     ParticipationRecord,
     build_ledger,
 )
-from p1.storage.db import DEFAULT_DB_PATH, get_connection
+from p1.storage.db import DEFAULT_DB_PATH
 from p1.storage.escalations_repo import EscalationStore
 from p1.storage.members_repo import resolve_display_name
 from p1.storage.nudges_repo import NudgeStore

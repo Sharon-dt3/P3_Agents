@@ -83,6 +83,7 @@ def _result(section_lines: dict, participation: list[ParticipationRecord]) -> Da
         section_lines=section_lines,
         dropped={},
         participation=participation,
+        answered_questions=[],
         content="",
     )
 
