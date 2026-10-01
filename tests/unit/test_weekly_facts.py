@@ -25,6 +25,7 @@ from p1.reporting.weekly_facts import (
     weekly_decisions,
     working_days_in_range,
 )
+from p1.storage.classification_points_repo import ClassificationPointsStore
 from p1.storage.classifications_repo import ClassificationStore
 from p1.storage.db import get_connection, init_db
 from p1.storage.messages_repo import MessageStore
@@ -227,6 +228,79 @@ def test_a_reply_that_arrives_the_following_week_does_not_count(db_path):
     _seed(db_path, "q3-reply", "alice", date(2026, 6, 8), "chatter", thread_root_id="q3")
     result = unanswered_all_week_questions(CHANNEL_ID, WEEK_END, _config(), db_path=db_path)
     assert [f.message_id for f in result] == ["q3"]
+
+
+def test_a_question_posted_mid_thread_is_answered_by_a_later_sibling_reply(db_path):
+    # The question itself is a REPLY within an existing thread (its own
+    # thread_root_id points at the thread's real first message, "root"),
+    # not the thread's root -- exactly the real shape a live channel
+    # produced (see DECISION_LOG.md): a question asked partway through an
+    # ongoing conversation, answered by a later message in that SAME
+    # thread. Both the question and its answer share thread_root_id
+    # "root"; neither points at the other directly.
+    _seed(db_path, "root", "bob", date(2026, 6, 1), "chatter", body="Hi team")
+    _seed(db_path, "q4", "bob", date(2026, 6, 2), "question", thread_root_id="root")
+    _seed(db_path, "q4-answer", "alice", date(2026, 6, 3), "chatter", thread_root_id="root")
+    result = unanswered_all_week_questions(CHANNEL_ID, WEEK_END, _config(), db_path=db_path)
+    assert result == []
+
+
+def test_an_earlier_sibling_in_the_same_thread_does_not_answer_a_later_question(db_path):
+    # A message that precedes the question in the same thread (e.g. the
+    # greeting that started the conversation, or small talk before the
+    # question was actually asked) must never count as answering a
+    # question asked later in that same thread.
+    _seed(db_path, "root2", "bob", date(2026, 6, 1), "chatter", body="Hi team")
+    _seed(db_path, "early-chatter", "alice", date(2026, 6, 2), "chatter", thread_root_id="root2")
+    _seed(db_path, "q5", "bob", date(2026, 6, 3), "question", thread_root_id="root2")
+    result = unanswered_all_week_questions(CHANNEL_ID, WEEK_END, _config(), db_path=db_path)
+    assert [f.message_id for f in result] == ["q5"]
+
+
+# --- a message's own points, 2026-10-01 -----------------------------------
+
+
+def test_a_blocker_among_a_messages_own_points_is_counted_as_recurring(db_path):
+    # Bob's dominant label on both days is "update" -- without the points
+    # breakdown, these would never be seen as blockers at all, let alone
+    # a recurring one.
+    _seed(db_path, "m1", "bob", date(2026, 6, 1), "update", body="Shipped X. Blocked on Y.")
+    _seed(db_path, "m2", "bob", date(2026, 6, 2), "update", body="Shipped Z. Still blocked on Y.")
+    ClassificationPointsStore(db_path).replace_for_message(
+        message_id="m1", points=[("update", "Shipped X.", 0.9), ("blocker", "Blocked on Y.", 0.9)],
+    )
+    ClassificationPointsStore(db_path).replace_for_message(
+        message_id="m2", points=[("update", "Shipped Z.", 0.9), ("blocker", "Still blocked on Y.", 0.9)],
+    )
+    result = recurring_blockers(CHANNEL_ID, WEEK_END, _config(), db_path=db_path)
+    assert len(result) == 1
+    assert result[0].author_id == "bob"
+    assert result[0].message_ids == ("m1", "m2")
+
+
+def test_a_decision_among_a_messages_own_points_appears_in_weekly_decisions(db_path):
+    _seed(db_path, "m3", "alice", date(2026, 6, 1), "update",
+          body="Shipped the export job. Decided to ship behind a feature flag.")
+    ClassificationPointsStore(db_path).replace_for_message(
+        message_id="m3",
+        points=[("update", "Shipped the export job.", 0.9),
+                ("decision", "Decided to ship behind a feature flag.", 0.9)],
+    )
+    result = weekly_decisions(CHANNEL_ID, WEEK_END, _config(), db_path=db_path)
+    assert [f.message_id for f in result] == ["m3"]
+    assert "feature flag" in result[0].body_raw
+
+
+def test_a_member_whose_only_content_is_a_point_still_counts_as_contributing(db_path):
+    # Bob's one message is dominant-labeled "chatter" -- CONTRIBUTOR_LABELS
+    # would normally exclude it entirely -- but it has a real embedded
+    # update point, which must still count as a contributed day.
+    _seed(db_path, "m4", "bob", date(2026, 6, 1), "chatter", body="lol anyway, shipped the export job")
+    ClassificationPointsStore(db_path).replace_for_message(
+        message_id="m4", points=[("update", "shipped the export job", 0.9)],
+    )
+    result = member_participation(CHANNEL_ID, WEEK_END, _config(), db_path=db_path)
+    assert result["bob"].contributed_days == 1
 
 
 # --- gather_weekly_facts ---------------------------------------------------

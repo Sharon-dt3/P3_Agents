@@ -164,7 +164,7 @@ def _measure_gc3() -> list[MetricResult]:
         for label, message_id, author_id, body in _GC3_FACT_SPECS:
             _seed_fact(db_path, label=label, message_id=message_id, author_id=author_id, body=body)
 
-        facts_by_section, _ = gather_daily_facts(CHANNEL_ID, DAY, config, db_path)
+        facts_by_section, _, _ = gather_daily_facts(CHANNEL_ID, DAY, config, db_path)
         all_facts = [fact for facts in facts_by_section.values() for fact in facts]
         message_lookup = {fact.message_id: fact.body_raw for fact in all_facts}.get
 

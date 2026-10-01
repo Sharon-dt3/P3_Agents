@@ -63,6 +63,7 @@ from pathlib import Path
 
 from p1.config.calendar import is_working_day, to_local
 from p1.config.schema import ChannelConfig
+from p1.storage.classification_points_repo import ClassificationPointsStore
 from p1.storage.db import DEFAULT_DB_PATH, get_connection
 
 # The same four labels CHN-10's participation ledger already treats as
@@ -72,7 +73,7 @@ CONTRIBUTOR_LABELS = frozenset({"update", "blocker", "decision", "question"})
 
 _SELECT_ROSTER_LABELED_MESSAGES_SQL = (
     "SELECT m.id AS message_id, m.author_id, m.posted_at, m.body_raw, "
-    "m.permalink, c.label "
+    "m.permalink, m.thread_root_id, c.label "
     "FROM messages m JOIN classifications c ON c.message_id = m.id "
     "WHERE m.channel_id = :channel_id AND m.is_deleted = 0 "
     "ORDER BY m.posted_at"
@@ -146,9 +147,25 @@ class WeeklyFacts:
 
 
 def _roster_labeled_rows(channel_id: str, config: ChannelConfig, db_path: str | Path) -> list[dict]:
+    """One row per (message, effective label) -- usually one row per
+    message, its own single dominant label, exactly as CHN-09 recorded
+    it. A message with a stored points breakdown (classification_points,
+    2026-10-01 -- see ClassificationResult.points' own docstring)
+    instead contributes one row per DISTINCT label among its own
+    points (two points sharing a label merge into one row, body_raw
+    joined -- never two rows for one message under one label), so a
+    bulky update that also contains a real blocker or a real question
+    is counted as a blocker and a question too, by every caller of this
+    function -- participation, recurring blockers, decisions, and
+    unanswered questions alike -- not just buried under whichever label
+    was dominant for the message as a whole. A message with no stored
+    points (most of them) is entirely unaffected."""
     conn = get_connection(db_path)
     try:
         rows = conn.execute(_SELECT_ROSTER_LABELED_MESSAGES_SQL, {"channel_id": channel_id}).fetchall()
+        points_by_message = ClassificationPointsStore(db_path).for_messages(
+            [row["message_id"] for row in rows if row["author_id"] in set(config.roster)]
+        )
     finally:
         conn.close()
 
@@ -158,17 +175,23 @@ def _roster_labeled_rows(channel_id: str, config: ChannelConfig, db_path: str | 
         if row["author_id"] not in roster:
             continue
         local_date = to_local(row["posted_at"], config.timezone).date()
-        out.append(
-            {
-                "message_id": row["message_id"],
-                "author_id": row["author_id"],
-                "posted_at": row["posted_at"],
-                "body_raw": row["body_raw"],
-                "permalink": row["permalink"],
-                "label": row["label"],
-                "date": local_date,
-            }
-        )
+        base = {
+            "message_id": row["message_id"],
+            "author_id": row["author_id"],
+            "posted_at": row["posted_at"],
+            "permalink": row["permalink"],
+            "date": local_date,
+            "thread_root_id": row["thread_root_id"],
+        }
+        points = points_by_message.get(row["message_id"])
+        if not points:
+            out.append({**base, "body_raw": row["body_raw"], "label": row["label"]})
+            continue
+        by_label: dict[str, list[str]] = {}
+        for point in points:
+            by_label.setdefault(point["label"], []).append(point["point_text"])
+        for label, texts in by_label.items():
+            out.append({**base, "body_raw": " ".join(texts), "label": label})
     return out
 
 
@@ -301,27 +324,47 @@ def unanswered_all_week_questions(
     if not question_rows:
         return []
 
-    question_ids = [r["message_id"] for r in question_rows]
+    # A question posted mid-thread (a reply itself, not the thread's own
+    # first message) has its OWN thread_root_id pointing at that thread's
+    # real root -- Teams/Graph channel replies are flat, so a later answer
+    # in the same thread also points at that same root, never at the
+    # question's own id, so it could never be found by matching against
+    # the question's id directly. Each question's EFFECTIVE thread id is
+    # therefore its own thread_root_id when it has one, falling back to
+    # its own id only when the question itself is the thread's root.
+    effective_thread_id = {
+        r["message_id"]: (r["thread_root_id"] or r["message_id"]) for r in question_rows
+    }
+    question_posted_at = {r["message_id"]: r["posted_at"] for r in question_rows}
+    thread_ids = sorted(set(effective_thread_id.values()))
+
     conn = get_connection(db_path)
     try:
-        placeholders = ", ".join("?" for _ in question_ids)
+        placeholders = ", ".join("?" for _ in thread_ids)
         reply_rows = conn.execute(
-            f"SELECT thread_root_id, posted_at FROM messages "
+            f"SELECT id, thread_root_id, posted_at FROM messages "
             f"WHERE thread_root_id IN ({placeholders}) AND is_deleted = 0",
-            question_ids,
+            thread_ids,
         ).fetchall()
     finally:
         conn.close()
 
-    # A reply answers its question for THIS week's purposes only if it
-    # was itself posted on or before week_end -- a reply that arrives
-    # the following week does not retroactively make this week's
-    # question answered (see module docstring).
-    answered_within_week: set[str] = {
-        row["thread_root_id"]
-        for row in reply_rows
-        if to_local(row["posted_at"], config.timezone).date() <= week_end
-    }
+    # A reply answers its question for THIS week's purposes only if it is
+    # in the same thread, was posted strictly after the question itself
+    # (an earlier sibling in the same thread cannot be answering a
+    # question asked later in it), and was itself posted on or before
+    # week_end -- a reply that arrives the following week does not
+    # retroactively make this week's question answered (see module
+    # docstring).
+    answered_within_week: set[str] = set()
+    for qid, tid in effective_thread_id.items():
+        q_posted_at = question_posted_at[qid]
+        for row in reply_rows:
+            if row["thread_root_id"] != tid or row["id"] == qid or row["posted_at"] <= q_posted_at:
+                continue
+            if to_local(row["posted_at"], config.timezone).date() <= week_end:
+                answered_within_week.add(qid)
+                break
 
     facts = [
         WeeklyFact(

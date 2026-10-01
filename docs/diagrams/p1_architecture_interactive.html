@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>P1 Architecture Explorer</title>
+<style>
+:root{--bg:#fff;--fg:#2c2c2a;--muted:#5f5e5a;--line:#5f5e5a;--gray-f:#f1efe8;--gray-s:#888780;
+--teal-f:#e1f5ee;--teal-s:#0f6e56;--teal-t:#085041;--teal-b:#9fe1cb;
+--pur-f:#eeedfe;--pur-s:#534ab7;--pur-t:#3c3489;--pur-b:#cecbf6;
+--amb-f:#faeeda;--amb-s:#854f0b;--amb-t:#633806;--amb-b:#fac775;--panel:#faf9f5;--accent:#185fa5}
+@media (prefers-color-scheme:dark){:root{--bg:#191917;--fg:#eceae2;--muted:#a8a69d;--line:#a8a69d;--gray-f:#2a2a27;--gray-s:#77756e;
+--teal-f:#0b2e26;--teal-s:#3cbf9b;--teal-t:#9fe1cb;--teal-b:#0f6e56;
+--pur-f:#24214a;--pur-s:#8f88e6;--pur-t:#cecbf6;--pur-b:#3c3489;
+--amb-f:#3a2a10;--amb-s:#e0a04a;--amb-t:#fac775;--amb-b:#633806;--panel:#22221f;--accent:#7fb4ee}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+main{max-width:980px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:22px;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 14px}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px}
+button{font:inherit;padding:6px 12px;border-radius:8px;border:1px solid var(--gray-s);background:var(--gray-f);color:var(--fg);cursor:pointer}
+button:hover{border-color:var(--accent)}button:disabled{opacity:.4;cursor:default}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.stepname{font-weight:600;margin-left:6px}
+svg{width:100%;height:auto;display:block}
+svg text{font-family:inherit;fill:var(--fg)}
+.th{font-size:14px;font-weight:600}.ts{font-size:12px;fill:var(--muted)}
+.node{cursor:pointer;transition:opacity .2s}
+.node rect.b{stroke-width:.8;transition:stroke-width .15s}
+.node:hover rect.b,.node:focus rect.b,.node.sel rect.b{stroke-width:2.5}
+.node:focus{outline:none}
+.gray rect.b{fill:var(--gray-f);stroke:var(--gray-s)}
+.teal rect.b{fill:var(--teal-f);stroke:var(--teal-s)}.teal .th{fill:var(--teal-t)}.teal .ts{fill:var(--teal-s)}.teal circle{fill:var(--teal-b);stroke:var(--teal-s)}
+.pur rect.b{fill:var(--pur-f);stroke:var(--pur-s)}.pur .th{fill:var(--pur-t)}.pur .ts{fill:var(--pur-s)}.pur circle{fill:var(--pur-b);stroke:var(--pur-s)}
+.amb rect.b{fill:var(--amb-f);stroke:var(--amb-s)}.amb .th{fill:var(--amb-t)}.amb .ts{fill:var(--amb-s)}.amb circle{fill:var(--amb-b);stroke:var(--amb-s)}
+.dashed rect.b{stroke-dasharray:4 3}
+.edge{stroke:var(--line);stroke-width:1.5;fill:none;transition:opacity .2s,stroke-width .2s}
+.lbl{font-size:12px;fill:var(--muted)}
+.container{fill:none;stroke:var(--gray-s);stroke-width:.8;stroke-dasharray:5 4}
+.dim{opacity:.18}
+.edge.hot{stroke:var(--accent);stroke-width:2.8;stroke-dasharray:6 4;animation:flow .8s linear infinite}
+@keyframes flow{to{stroke-dashoffset:-20}}
+@media (prefers-reduced-motion:reduce){.edge.hot{animation:none}}
+.legend{display:flex;flex-wrap:wrap;gap:14px;margin:10px 0 14px;font-size:13px;color:var(--muted)}
+.legend span::before{content:"";display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px;border:1px solid}
+.l1::before{background:var(--teal-f);border-color:var(--teal-s)}.l2::before{background:var(--pur-f);border-color:var(--pur-s)}
+.l3::before{background:var(--amb-f);border-color:var(--amb-s)}.l4::before{background:var(--gray-f);border-color:var(--gray-s)}
+#panel{background:var(--panel);border:1px solid var(--gray-s);border-radius:10px;padding:14px 16px;min-height:150px}
+#panel h2{font-size:17px;margin:0 0 2px}
+#panel .kind{color:var(--muted);font-size:13px;margin-bottom:8px}
+#panel ul{margin:6px 0 10px;padding-left:20px}
+#panel code{font:12.5px ui-monospace,Menlo,monospace;background:var(--gray-f);padding:1px 6px;border-radius:5px;margin-right:4px;display:inline-block;margin-bottom:3px}
+.weak{border-left:3px solid var(--amb-s);padding:2px 10px;color:var(--muted);margin-top:8px}
+.hint{color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+<h1>P1 Teams Channel Intelligence: architecture explorer</h1>
+<p class="sub">Click any component for what it does, where the code lives and its weak spots. Or follow one message from Teams to a published digest.</p>
+<div class="bar">
+<button id="start" class="primary">Follow a message</button>
+<button id="prev" disabled>Back</button><button id="next" disabled>Next</button><button id="reset" disabled>Clear</button>
+<span class="stepname" id="stepname"></span>
+</div>
+
+<svg viewBox="0 0 680 615" role="group" aria-label="P1 architecture diagram">
+<defs><marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+<g id="edges">
+<line class="edge" data-e="teams-graph" x1="78" y1="58" x2="78" y2="90" marker-end="url(#ar)"/><text class="lbl" x="86" y="78">read</text>
+<line class="edge" data-e="pa-teams" x1="602" y1="90" x2="602" y2="60" marker-end="url(#ar)"/><text class="lbl" x="610" y="78">post</text>
+<line class="edge" data-e="graph-scope" x1="78" y1="146" x2="78" y2="176" marker-end="url(#ar)"/>
+<line class="edge" data-e="ollama-gateway" x1="209" y1="146" x2="209" y2="176" marker-start="url(#ar)" marker-end="url(#ar)"/>
+<line class="edge" data-e="bedrock-gateway" x1="405" y1="146" x2="405" y2="176" marker-start="url(#ar)" marker-end="url(#ar)"/>
+<line class="edge" data-e="guard-pa" x1="602" y1="176" x2="602" y2="148" marker-end="url(#ar)"/>
+<line class="edge" data-e="scope-ing" x1="78" y1="232" x2="78" y2="292" marker-end="url(#ar)"/>
+<line class="edge" data-e="gateway-det" x1="209" y1="232" x2="209" y2="292" marker-start="url(#ar)" marker-end="url(#ar)"/>
+<line class="edge" data-e="gateway-sum" x1="471" y1="232" x2="471" y2="292" marker-start="url(#ar)" marker-end="url(#ar)"/>
+<line class="edge" data-e="act-guard" x1="602" y1="292" x2="602" y2="234" marker-end="url(#ar)"/>
+<line class="edge" data-e="ing-det" x1="138" y1="339" x2="149" y2="339" marker-end="url(#ar)"/>
+<line class="edge" data-e="det-led" x1="269" y1="339" x2="280" y2="339" marker-end="url(#ar)"/>
+<line class="edge" data-e="led-sum" x1="400" y1="339" x2="411" y2="339" marker-end="url(#ar)"/>
+<line class="edge" data-e="sum-act" x1="531" y1="339" x2="542" y2="339" marker-end="url(#ar)"/>
+<line class="edge" data-e="ing-db" x1="78" y1="384" x2="78" y2="424" marker-start="url(#ar)" marker-end="url(#ar)"/>
+<line class="edge" data-e="det-db" x1="209" y1="384" x2="209" y2="424" marker-start="url(#ar)" marker-end="url(#ar)"/>
+<line class="edge" data-e="led-db" x1="340" y1="384" x2="340" y2="424" marker-start="url(#ar)" marker-end="url(#ar)"/>
+<line class="edge" data-e="sum-db" x1="471" y1="384" x2="471" y2="424" marker-start="url(#ar)" marker-end="url(#ar)"/>
+<line class="edge" data-e="act-dash" x1="602" y1="384" x2="602" y2="424" marker-start="url(#ar)" marker-end="url(#ar)"/><text class="lbl" x="610" y="410">approve</text>
+<line class="edge" data-e="cfg-db" x1="143" y1="512" x2="143" y2="484" marker-end="url(#ar)"/>
+<line class="edge" data-e="dash-owner" x1="602" y1="512" x2="602" y2="484" marker-start="url(#ar)" marker-end="url(#ar)"/>
+</g>
+
+<rect class="container" x="10" y="262" width="660" height="134" rx="8"/>
+<text class="th" x="92" y="282">Live runner</text>
+<text class="ts" x="340" y="282" text-anchor="middle">Coordinator · 5-min tick · cron · catch-up</text>
+
+<g class="node gray" data-id="teams" tabindex="0" role="button" aria-label="Microsoft Teams"><rect class="b" x="20" y="10" width="640" height="48" rx="6"/><rect class="b" x="34" y="22" width="24" height="24" rx="5"/><text class="th" x="46" y="39" text-anchor="middle">T</text><text class="th" x="350" y="30" text-anchor="middle">Microsoft Teams</text><text class="ts" x="350" y="47" text-anchor="middle">2 allowlisted channels read and posted to; chats and all others refused</text></g>
+<g class="node gray" data-id="graph" tabindex="0" role="button" aria-label="Graph API"><rect class="b" x="20" y="92" width="116" height="54" rx="4"/><text class="th" x="78" y="115" text-anchor="middle">Graph API</text><text class="ts" x="78" y="133" text-anchor="middle">Delegated, read-only</text></g>
+<g class="node gray" data-id="ollama" tabindex="0" role="button" aria-label="Ollama"><rect class="b" x="151" y="92" width="116" height="54" rx="4"/><text class="th" x="209" y="115" text-anchor="middle">Ollama</text><text class="ts" x="209" y="133" text-anchor="middle">gemma2:9b, local</text></g>
+<g class="node gray dashed" data-id="bedrock" tabindex="0" role="button" aria-label="AWS Bedrock"><rect class="b" x="282" y="92" width="247" height="54" rx="4"/><text class="th" x="405" y="115" text-anchor="middle">AWS Bedrock (optional)</text><text class="ts" x="405" y="133" text-anchor="middle">Access pending admin fix</text></g>
+<g class="node gray" data-id="pa" tabindex="0" role="button" aria-label="Power Automate"><rect class="b" x="544" y="92" width="116" height="54" rx="4"/><text class="th" x="602" y="115" text-anchor="middle">Power Automate</text><text class="ts" x="602" y="133" text-anchor="middle">Write-only flow</text></g>
+
+<g class="node teal" data-id="scope" tabindex="0" role="button" aria-label="Scope gate"><rect class="b" x="20" y="178" width="116" height="54" rx="4"/><text class="th" x="78" y="201" text-anchor="middle">Scope gate</text><text class="ts" x="78" y="219" text-anchor="middle">Allowlist check</text></g>
+<g class="node pur" data-id="gateway" tabindex="0" role="button" aria-label="LLM gateway"><rect class="b" x="151" y="178" width="378" height="54" rx="4"/><text class="th" x="340" y="201" text-anchor="middle">LLM gateway</text><text class="ts" x="340" y="219" text-anchor="middle">Provider switch, response cache, fallback to Ollama</text></g>
+<g class="node amb" data-id="guard" tabindex="0" role="button" aria-label="Approval gate"><rect class="b" x="544" y="178" width="116" height="54" rx="4"/><text class="th" x="602" y="201" text-anchor="middle">Approval gate</text><text class="ts" x="602" y="219" text-anchor="middle">Write guard, audit</text></g>
+
+<g class="node teal" data-id="ing" tabindex="0" role="button" aria-label="1 Ingest"><rect class="b" x="20" y="294" width="116" height="90" rx="4"/><circle cx="34" cy="308" r="9" stroke-width=".8"/><text class="ts" x="34" y="312" text-anchor="middle">1</text><text class="th" x="78" y="326" text-anchor="middle">Ingest</text><text class="ts" x="78" y="346" text-anchor="middle">Delta poll,</text><text class="ts" x="78" y="361" text-anchor="middle">thread replies,</text><text class="ts" x="78" y="376" text-anchor="middle">edits, deletes</text></g>
+<g class="node pur" data-id="det" tabindex="0" role="button" aria-label="2 Detect"><rect class="b" x="151" y="294" width="116" height="90" rx="4"/><circle cx="165" cy="308" r="9" stroke-width=".8"/><text class="ts" x="165" y="312" text-anchor="middle">2</text><text class="th" x="209" y="326" text-anchor="middle">Detect</text><text class="ts" x="209" y="346" text-anchor="middle">8 rules first,</text><text class="ts" x="209" y="361" text-anchor="middle">then classifier</text><text class="ts" x="209" y="376" text-anchor="middle">labels + score</text></g>
+<g class="node teal" data-id="led" tabindex="0" role="button" aria-label="3 Ledger"><rect class="b" x="282" y="294" width="116" height="90" rx="4"/><circle cx="296" cy="308" r="9" stroke-width=".8"/><text class="ts" x="296" y="312" text-anchor="middle">3</text><text class="th" x="340" y="326" text-anchor="middle">Ledger</text><text class="ts" x="340" y="346" text-anchor="middle">No message,</text><text class="ts" x="340" y="361" text-anchor="middle">Posted, no update,</text><text class="ts" x="340" y="376" text-anchor="middle">Excluded</text></g>
+<g class="node pur" data-id="sum" tabindex="0" role="button" aria-label="4 Summarize"><rect class="b" x="413" y="294" width="116" height="90" rx="4"/><circle cx="427" cy="308" r="9" stroke-width=".8"/><text class="ts" x="427" y="312" text-anchor="middle">4</text><text class="th" x="471" y="326" text-anchor="middle">Summarize</text><text class="ts" x="471" y="346" text-anchor="middle">Facts from code,</text><text class="ts" x="471" y="361" text-anchor="middle">model writes prose,</text><text class="ts" x="471" y="376" text-anchor="middle">lines cite source</text></g>
+<g class="node amb" data-id="act" tabindex="0" role="button" aria-label="5 Act"><rect class="b" x="544" y="294" width="116" height="90" rx="4"/><circle cx="558" cy="308" r="9" stroke-width=".8"/><text class="ts" x="558" y="312" text-anchor="middle">5</text><text class="th" x="602" y="326" text-anchor="middle">Act</text><text class="ts" x="602" y="346" text-anchor="middle">Digest, weekly,</text><text class="ts" x="602" y="361" text-anchor="middle">nudge, escalate,</text><text class="ts" x="602" y="376" text-anchor="middle">first-use approval</text></g>
+
+<g class="node gray" data-id="db" tabindex="0" role="button" aria-label="SQLite and Supabase"><rect class="b" x="20" y="426" width="509" height="56" rx="4"/><path d="M34 440 v22 a10 4 0 0 0 20 0 v-22 z" fill="none" stroke="var(--gray-s)"/><ellipse cx="44" cy="440" rx="10" ry="4" fill="none" stroke="var(--gray-s)"/><text class="th" x="290" y="449" text-anchor="middle">SQLite (p1_live.db), mirrored to Supabase</text><text class="ts" x="290" y="468" text-anchor="middle">Messages, classifications, ledger, digests, proposals, audit log</text></g>
+<g class="node amb" data-id="dash" tabindex="0" role="button" aria-label="Approval dashboard"><rect class="b" x="544" y="426" width="116" height="56" rx="4"/><text class="th" x="602" y="449" text-anchor="middle">Dashboard</text><text class="ts" x="602" y="468" text-anchor="middle">Streamlit, CLI</text></g>
+<g class="node gray" data-id="cfg" tabindex="0" role="button" aria-label="Per-channel YAML config"><rect class="b" x="20" y="512" width="247" height="62" rx="4"/><text class="th" x="143" y="538" text-anchor="middle">Per-channel YAML config</text><text class="ts" x="143" y="558" text-anchor="middle">Roster, window, digest times, nudge cap</text></g>
+<g class="node gray" data-id="eval" tabindex="0" role="button" aria-label="Tests and eval harness"><rect class="b" x="282" y="512" width="247" height="62" rx="4"/><text class="th" x="405" y="538" text-anchor="middle">Tests and eval harness</text><text class="ts" x="405" y="558" text-anchor="middle">Golden cases score the rules</text></g>
+<g class="node amb" data-id="owner" tabindex="0" role="button" aria-label="Channel owner"><rect class="b" x="544" y="512" width="116" height="62" rx="4"/><circle cx="602" cy="524" r="4" stroke-width=".8"/><path d="M594 536 q8 -10 16 0" fill="none" stroke="var(--amb-s)"/><text class="th" x="602" y="553" text-anchor="middle">Channel owner</text><text class="ts" x="602" y="568" text-anchor="middle">Approver</text></g>
+</svg>
+
+<div class="legend"><span class="l1">Deterministic</span><span class="l2">Uses the model</span><span class="l3">Human gate</span><span class="l4">External or data store</span></div>
+
+<section id="panel" aria-live="polite"><p class="hint">Select a component above, or press "Follow a message" to walk through one update from Teams to a published digest.</p></section>
+</main>
+
+<script>
+const N={
+teams:{t:"Microsoft Teams",k:"External system",b:["Two allowlisted channels: p1-agent-test (Asia/Colombo, digest 17:30) and Teams-agent-test (America/New_York, digest 13:00).","Read only through Graph; written only through Power Automate. The read credential can never post.","Chats and every non-allowlisted channel are refused before any data is read."],f:["config/channels/*.yaml"]},
+graph:{t:"Microsoft Graph API",k:"External system",b:["Delegated sign-in (MSAL) with read-only channel-message scope.","Delta queries return new, edited and deleted messages; thread replies are fetched separately.","Tokens refresh silently; if the network is down the runner waits and retries rather than crashing."],f:["src/p1/adapters/teams_reader_graph.py","src/p1/adapters/factory.py"]},
+ollama:{t:"Ollama (local model)",k:"External system",b:["Runs gemma2:9b on the laptop. Free, no data leaves the machine.","Serves one request at a time, so a long digest can queue behind poll ticks. Mitigated by reusing stored verdicts and a 180s timeout.","Cold model load takes about 19 seconds."],f:["packages/spine/src/spine/llm/gateway.py"],w:"The model mislabels casual 'we will ship...' messages as updates, and the HTML <p> wrapper in message bodies hurts the smaller model."},
+bedrock:{t:"AWS Bedrock (optional)",k:"External system, not live",b:["Supported as a provider in the gateway, but blocked by an AWS Marketplace 403 that needs an admin to fix.","When it works, the gateway can switch to it by config and fall back to Ollama on error."],f:["packages/spine/src/spine/llm/gateway.py"],w:"Not verified end to end. Treat as a planned upgrade, not a working path."},
+pa:{t:"Power Automate flow",k:"External system",b:["The only path that writes into Teams: an HTTP-triggered flow posts the approved digest to the channel.","Mock mode (LogPublisher) writes each would-be post to a log file instead, for tests and demos."],f:["src/p1/adapters/teams_publisher_power_automate.py","src/p1/adapters/teams_publisher_mock.py"]},
+scope:{t:"Scope gate",k:"Deterministic guard",b:["Wraps every reader. There is no code path that returns an ungated reader.","Refuses non-allowlisted channels and chats, and writes an audit row for each refusal."],f:["src/p1/governance/scope_gate.py","src/p1/adapters/factory.py"]},
+gateway:{t:"LLM gateway",k:"Shared service (spine)",b:["One interface over Ollama, Anthropic and Bedrock.","On-disk response cache keyed by request, so repeated calls are free.","Degrades to Ollama if the chosen provider fails."],f:["packages/spine/src/spine/llm/gateway.py","packages/spine/src/spine/llm/structured.py"]},
+guard:{t:"Approval gate and write guard",k:"Human gate",b:["Every outbound message goes through guarded_send, which checks the proposal status, idempotency key and writes an audit row.","Per spec, only a channel's first publish, the first nudge per person and the first escalation per person need a human. Later digests are system-approved.","Status machine: pending, approved, rejected, applied."],f:["packages/spine/src/spine/approval/write_guard.py","packages/spine/src/spine/approval/proposals.py","src/p1/approval/service.py"]},
+ing:{t:"1. Ingest",k:"Sub-agent, deterministic",b:["Polls each allowlisted channel every 5 minutes, and also fetches thread replies.","Stores edits and deletions, so a deleted message is excluded from later digests.","Ingests fresh data again just before each digest is generated."],f:["src/p1/ingestion/","scripts/live_runner_p1_agent_test.py"]},
+det:{t:"2. Detect",k:"Sub-agent, rules then model",b:["Eight rules run in order: deleted, system, bot, not on roster, thread reply, non-working day, outside window, below length floor. Rules can only exclude.","Anything unsettled goes to the classifier, which returns a label (update, question, blocker, decision, chatter, noise) and a confidence. Below 0.6 is flagged low confidence.","Stored verdicts are reused unless the message was edited."],f:["src/p1/detection/rules.py","src/p1/detection/classifier.py","src/p1/detection/pipeline.py"],w:"The golden-case eval scores the rules only, not the model."},
+led:{t:"3. Participation ledger",k:"Sub-agent, deterministic",b:["Each rostered person gets one of three states per day: no message, posted but no update, or excluded (for example on leave).","States are never collapsed into one, so a nudge only targets people who genuinely stayed silent.","A contributor is anyone with an update, question, blocker or decision."],f:["src/p1/participation/ledger.py","src/p1/reporting/participation_rendering.py"]},
+sum:{t:"4. Summarize",k:"Sub-agent, model writes prose",b:["Counts, rates and trends are computed in code. The model only writes the wording.","Grounding: any claim that cites no source message is dropped. Every line links back to its Teams message.","The weekly narrative may not contain digits, enforced by a validator."],f:["src/p1/reporting/daily_summary.py","src/p1/reporting/weekly_summary.py","packages/spine/src/spine/grounding/kernel.py"],w:"The weekly narrative sometimes spells numbers out in words to get past the no-digit check."},
+act:{t:"5. Act and publish",k:"Sub-agent, human gate on first use",b:["Daily digest (17:30 Colombo, 13:00 New York) and weekly roll-up (Fridays, after the daily digest).","Nudges are off by default and capped per day. Escalation needs N consecutive missed working days and an earlier nudge, and goes privately to the channel owner.","A 5-minute catch-up job publishes anything overdue the same day after an outage."],f:["src/p1/publishing/daily_job.py","src/p1/publishing/weekly_job.py","src/p1/publishing/catchup.py","src/p1/nudges/nudge_job.py"],w:"Catch-up is same-day only and needs a runner alive. Laptop off all day means no digest."},
+db:{t:"SQLite and Supabase",k:"Data store",b:["data/p1_live.db holds messages, classifications, digests, proposals and the audit log.","The runners mirror it to Supabase after each successful poll.","Every sub-agent reads and writes here, so each step can be inspected or replayed."],f:["src/p1/storage/db.py","src/p1/storage/*_repo.py"]},
+dash:{t:"Approval dashboard",k:"Human interface",b:["Streamlit app listing pending proposals with names, content and evidence. Approve sends the real message.","scripts/approve_cli.py does the same from the terminal.","Copilot Studio approval was designed but is blocked by admin permissions, so this is the fallback."],f:["app/approval_dashboard.py","scripts/approve_cli.py"]},
+cfg:{t:"Per-channel YAML config",k:"Configuration",b:["Roster, update window, timezone, working days, digest times, nudge settings, escalation threshold, owner.","Validated by pydantic and versioned. Owner-editable fields sync into SQLite.","A weekly digest time must fall after both the update window end and the daily digest."],f:["config/channels/p1-agent-test.yaml","config/channels/teams-agent-test.yaml","src/p1/config/schema.py"],w:"p1-agent-test still has temporary test overrides (weekend working days, nudges on)."},
+eval:{t:"Tests and eval harness",k:"Quality",b:["About 540 unit tests plus 25 for the shared spine package.","Golden cases score the deterministic rules; mock adapters keep them repeatable with no network.","Decisions and their reasons are logged in DECISION_LOG.md."],f:["tests/","scripts/run_eval.py","DECISION_LOG.md"],w:"Real-Teams quirks such as HTML bodies only showed up in live testing, not in the mock fixtures."},
+owner:{t:"Channel owner",k:"Human",b:["Sets the config and owns escalations, which are sent privately.","Approves a channel's first publish, and the first nudge and first escalation per person.","Can reject: a rejected nudge is never sent and stays in the audit log."],f:[]}
+};
+const STEPS=[
+{n:"1. A message lands",on:["teams","graph","scope","ing","db"],d:"Someone posts in an allowlisted channel. The runner's 5-minute tick reads it through Graph. The scope gate has already confirmed the channel is allowed, and the message is stored in SQLite."},
+{n:"2. Rules, then the model",on:["ing","det","gateway","ollama","db"],d:"Eight deterministic rules try to settle the message first. Only what they cannot decide goes through the LLM gateway to the local model, which labels it and gives a confidence."},
+{n:"3. The ledger updates",on:["det","led","cfg","db"],d:"Using the roster and working days from config, each person is marked no message, posted but no update, or excluded. This is computed, never guessed."},
+{n:"4. The digest is drafted",on:["led","sum","gateway","ollama","db"],d:"At digest time the runner refreshes data, computes the facts in code, and asks the model only for prose. Lines with no source message are dropped."},
+{n:"5. A human approves the first send",on:["sum","act","guard","dash","owner","db"],d:"For a channel's first publish, the proposal waits at the approval gate. The owner approves in the dashboard. After that, digests are system-approved and go straight through."},
+{n:"6. It posts back to Teams",on:["act","guard","pa","teams"],d:"The write guard checks status and idempotency, writes an audit row, and hands the digest to Power Automate, which posts it with permalinks into the channel."}
+];
+const $=s=>document.querySelector(s),all=s=>[...document.querySelectorAll(s)];
+const panel=$("#panel");let step=-1,sel=null;
+function esc(s){return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}
+function showNode(id){const n=N[id];sel=id;
+ panel.innerHTML=`<h2>${esc(n.t)}</h2><div class="kind">${esc(n.k)}</div><ul>${n.b.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`+
+ (n.f.length?`<div>${n.f.map(f=>`<code>${esc(f)}</code>`).join("")}</div>`:"")+(n.w?`<div class="weak"><strong>Weak spot:</strong> ${esc(n.w)}</div>`:"");
+ all(".node").forEach(g=>g.classList.toggle("sel",g.dataset.id===id));}
+function render(){
+ const s=STEPS[step];const on=s?new Set(s.on):null;
+ all(".node").forEach(g=>g.classList.toggle("dim",!!on&&!on.has(g.dataset.id)));
+ all(".edge").forEach(l=>{const [a,b]=l.dataset.e.split("-");const hot=!!on&&on.has(a)&&on.has(b);l.classList.toggle("hot",hot);l.classList.toggle("dim",!!on&&!hot)});
+ $("#stepname").textContent=s?s.n:"";
+ $("#prev").disabled=step<=0;$("#next").disabled=step<0||step>=STEPS.length-1;$("#reset").disabled=step<0;
+ $("#start").textContent=step<0?"Follow a message":"Restart";
+ if(s){all(".node").forEach(g=>g.classList.remove("sel"));sel=null;
+  panel.innerHTML=`<h2>${esc(s.n)}</h2><p>${esc(s.d)}</p><p class="hint">Step ${step+1} of ${STEPS.length}. Click a highlighted component for detail.</p>`;}}
+$("#start").onclick=()=>{step=0;render()};
+$("#next").onclick=()=>{if(step<STEPS.length-1){step++;render()}};
+$("#prev").onclick=()=>{if(step>0){step--;render()}};
+$("#reset").onclick=()=>{step=-1;render();panel.innerHTML='<p class="hint">Select a component above, or press "Follow a message".</p>'};
+all(".node").forEach(g=>{const go=()=>showNode(g.dataset.id);g.addEventListener("click",go);
+ g.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();go()}})});
+document.addEventListener("keydown",e=>{if(step<0)return;if(e.key==="ArrowRight")$("#next").click();if(e.key==="ArrowLeft")$("#prev").click()});
+</script>
+</body>
+</html>

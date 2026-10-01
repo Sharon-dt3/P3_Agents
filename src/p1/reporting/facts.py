@@ -39,6 +39,7 @@ from pathlib import Path
 
 from p1.config.calendar import to_local
 from p1.config.schema import ChannelConfig
+from p1.storage.classification_points_repo import ClassificationPointsStore
 from p1.storage.db import DEFAULT_DB_PATH, get_connection
 
 # The four classifications.label values that are ever a fact this digest
@@ -55,7 +56,7 @@ SECTION_ORDER = ("what_moved", "blockers", "decisions", "questions")
 
 _SELECT_CLASSIFIED_MESSAGES_SQL = (
     "SELECT m.id AS message_id, m.author_id, m.posted_at, m.body_raw, "
-    "m.permalink, c.label "
+    "m.permalink, m.thread_root_id, c.label "
     "FROM messages m "
     "JOIN classifications c ON c.message_id = m.id "
     "WHERE m.channel_id = :channel_id AND m.is_deleted = 0 "
@@ -80,10 +81,40 @@ def gather_daily_facts(
     day: date_type,
     config: ChannelConfig,
     db_path: str | Path = DEFAULT_DB_PATH,
-) -> tuple[dict[str, list[DailyFact]], dict[str, str]]:
+) -> tuple[dict[str, list[DailyFact]], dict[str, str], list[DailyFact]]:
     """Returns (facts grouped by section, message_id -> permalink for
-    every fact returned, across all sections) for one channel and one
-    calendar day."""
+    every fact returned across all sections, questions answered today)
+    for one channel and one calendar day.
+
+    A question found answered (see _answered_question_ids) is not
+    simply dropped -- from the outside, "detected as a question AND
+    correctly found answered" and "never detected as a question at
+    all" rendered identically: both just looked like the question
+    wasn't there (2026-10-01, see DECISION_LOG.md). It is instead
+    returned in its own third list, so the digest can show it was
+    asked and resolved today instead of silently vanishing.
+
+    A message with a stored points breakdown (classification_points,
+    2026-10-01 -- see ClassificationResult.points' own docstring) is not
+    one fact under its single dominant label: each distinct point is
+    routed to ITS OWN section under its own label, so a bulky update
+    that also contains a real blocker or a real question lands in
+    "blockers"/"questions", not buried as an extra line under "what
+    moved" the way it would under the message's one dominant label
+    alone. A message with no stored points (most of them) falls back to
+    exactly the prior, single-fact-per-message behaviour unchanged.
+
+    Two or more of a message's OWN points sharing the same label (two
+    distinct update-points in one message, say) are merged into a
+    single DailyFact for that (message_id, label) pair, their texts
+    joined -- never two separate facts with the same message_id in one
+    section. That is not a stylistic choice: _generate_section_lines's
+    own message_lookup is a plain {message_id: body_raw} dict, so a
+    second fact sharing a message_id already in it would silently
+    overwrite the first's text for grounding purposes. One entry per
+    (message_id, section) avoids that collision entirely, and still
+    lets the daily-summary prompt (v2, 2026-10-01) write one line per
+    distinct point within that merged text."""
     conn = get_connection(db_path)
     try:
         rows = conn.execute(_SELECT_CLASSIFIED_MESSAGES_SQL, {"channel_id": channel_id}).fetchall()
@@ -97,52 +128,92 @@ def gather_daily_facts(
             and row["permalink"]
             and to_local(row["posted_at"], config.timezone).date() == day
         ]
+        points_by_message = ClassificationPointsStore(db_path).for_messages(
+            [row["message_id"] for row in day_rows]
+        )
 
-        question_ids = [row["message_id"] for row in day_rows if row["label"] == "question"]
-        answered = _answered_question_ids(conn, question_ids)
+        items = []
+        for row in day_rows:
+            points = points_by_message.get(row["message_id"])
+            if not points:
+                items.append({**dict(row), "body_raw": row["body_raw"]})
+                continue
+            by_label: dict[str, list[str]] = {}
+            for point in points:
+                by_label.setdefault(point["label"], []).append(point["point_text"])
+            for label, texts in by_label.items():
+                items.append({**dict(row), "label": label, "body_raw": " ".join(texts)})
+
+        question_rows = [item for item in items if item["label"] == "question"]
+        answered = _answered_question_ids(conn, question_rows)
     finally:
         conn.close()
 
     sections: dict[str, list[DailyFact]] = {section: [] for section in SECTION_ORDER}
     permalink_by_id: dict[str, str] = {}
+    answered_questions: list[DailyFact] = []
 
-    for row in day_rows:
-        if row["label"] == "question" and row["message_id"] in answered:
-            continue
-        section = CONTENT_LABELS[row["label"]]
-        sections[section].append(
-            DailyFact(
-                message_id=row["message_id"],
-                author_id=row["author_id"],
-                body_raw=row["body_raw"],
-                permalink=row["permalink"],
-                label=row["label"],
-            )
+    for item in items:
+        fact = DailyFact(
+            message_id=item["message_id"],
+            author_id=item["author_id"],
+            body_raw=item["body_raw"],
+            permalink=item["permalink"],
+            label=item["label"],
         )
-        permalink_by_id[row["message_id"]] = row["permalink"]
+        permalink_by_id[item["message_id"]] = item["permalink"]
+        if item["label"] == "question" and item["message_id"] in answered:
+            answered_questions.append(fact)
+            continue
+        sections[CONTENT_LABELS[item["label"]]].append(fact)
 
-    return sections, permalink_by_id
+    return sections, permalink_by_id, answered_questions
 
 
-def _answered_question_ids(conn, question_ids: list[str]) -> set[str]:
+def _answered_question_ids(conn, question_rows: list) -> set[str]:
     """A question counts as "still awaiting an answer" unless at least
-    one non-deleted thread reply already exists to it. This is a
-    deliberate simplification, not an oversight: there is no "answer"
-    classification label this system produces (CHN-09's six labels are
-    update/question/blocker/decision/chatter/noise), so "was this
-    substantively answered" is not a fact this codebase can honestly
-    compute yet. Any reply at all is treated as the channel having
-    addressed it, rather than this module guessing at which replies
-    count -- see DECISION_LOG.md."""
-    if not question_ids:
+    one non-deleted message, elsewhere in its own conversation thread,
+    was posted after it. This is a deliberate simplification, not an
+    oversight: there is no "answer" classification label this system
+    produces (CHN-09's six labels are update/question/blocker/decision/
+    chatter/noise), so "was this substantively answered" is not a fact
+    this codebase can honestly compute yet. Any later message in the
+    thread at all is treated as the channel having addressed it, rather
+    than this module guessing at which replies count -- see
+    DECISION_LOG.md.
+
+    A question posted mid-thread (itself a reply, not the thread's own
+    first message) has its OWN thread_root_id pointing at that thread's
+    real root -- Teams/Graph channel replies are flat, so a later answer
+    in the same thread also points at that same root, never at the
+    question's own id. Each question's EFFECTIVE thread id is therefore
+    its own thread_root_id when it has one, falling back to its own id
+    only when the question itself is the thread's root."""
+    if not question_rows:
         return set()
-    placeholders = ", ".join("?" for _ in question_ids)
+
+    effective_thread_id = {
+        row["message_id"]: (row["thread_root_id"] or row["message_id"]) for row in question_rows
+    }
+    question_posted_at = {row["message_id"]: row["posted_at"] for row in question_rows}
+    thread_ids = sorted(set(effective_thread_id.values()))
+
+    placeholders = ", ".join("?" for _ in thread_ids)
     sql = (
-        "SELECT DISTINCT thread_root_id FROM messages "
+        "SELECT id, thread_root_id, posted_at FROM messages "
         f"WHERE thread_root_id IN ({placeholders}) AND is_deleted = 0"
     )
-    rows = conn.execute(sql, question_ids).fetchall()
-    return {row["thread_root_id"] for row in rows}
+    reply_rows = conn.execute(sql, thread_ids).fetchall()
+
+    answered: set[str] = set()
+    for qid, tid in effective_thread_id.items():
+        q_posted_at = question_posted_at[qid]
+        for row in reply_rows:
+            if row["thread_root_id"] != tid or row["id"] == qid or row["posted_at"] <= q_posted_at:
+                continue
+            answered.add(qid)
+            break
+    return answered
 
 
 def render_facts_block(facts: list[DailyFact]) -> str:

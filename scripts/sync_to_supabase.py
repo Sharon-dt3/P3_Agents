@@ -55,6 +55,7 @@ MIRROR_TABLES = [
     ("members", "id"),
     ("messages", "id"),
     ("classifications", "message_id"),
+    ("classification_points", "id"),
     ("participation", "id"),
     ("proposals", "id"),
     ("digests", "id"),

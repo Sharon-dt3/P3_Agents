@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 625" width="680" height="625">
+<style>
+text{font-family:Helvetica,Arial,sans-serif;fill:#2c2c2a}
+.th{font-size:14px;font-weight:600}
+.ts{font-size:12px;fill:#5f5e5a}
+.box{fill:#f1efe8;stroke:#888780}
+.arr{stroke:#5f5e5a;stroke-width:1.5;fill:none}
+.c-teal rect{fill:#e1f5ee;stroke:#0f6e56}.c-teal .th{fill:#085041}.c-teal .ts{fill:#0f6e56}.c-teal circle{fill:#9fe1cb;stroke:#0f6e56}
+.c-purple rect{fill:#eeedfe;stroke:#534ab7}.c-purple .th{fill:#3c3489}.c-purple .ts{fill:#534ab7}.c-purple circle{fill:#cecbf6;stroke:#534ab7}
+.c-amber rect{fill:#faeeda;stroke:#854f0b}.c-amber .th{fill:#633806}.c-amber .ts{fill:#854f0b}.c-amber circle{fill:#fac775;stroke:#854f0b}.c-amber path{stroke:#854f0b}
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#5f5e5a" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<rect width="680" height="625" fill="#ffffff"/>
+<g><rect class="box" x="20" y="10" width="640" height="48" rx="6" stroke-width="0.5"/><rect class="box" x="34" y="22" width="24" height="24" rx="5" stroke-width="0.5"/><text class="th" x="46" y="39" text-anchor="middle">T</text>
+<text class="th" x="350" y="30" text-anchor="middle">Microsoft Teams</text><text class="ts" x="350" y="47" text-anchor="middle">2 allowlisted channels read and posted to; chats and all others refused</text></g>
+<g><rect class="box" x="20" y="92" width="116" height="54" rx="4" stroke-width="0.5"/><text class="th" x="78" y="115" text-anchor="middle">Graph API</text><text class="ts" x="78" y="133" text-anchor="middle">Delegated, read-only</text></g>
+<g><rect class="box" x="151" y="92" width="116" height="54" rx="4" stroke-width="0.5"/><text class="th" x="209" y="115" text-anchor="middle">Ollama</text><text class="ts" x="209" y="133" text-anchor="middle">gemma2:9b, local</text></g>
+<g><rect class="box" x="282" y="92" width="247" height="54" rx="4" stroke-width="0.5" stroke-dasharray="4 3"/><text class="th" x="405" y="115" text-anchor="middle">AWS Bedrock (optional)</text><text class="ts" x="405" y="133" text-anchor="middle">Access pending admin fix</text></g>
+<g><rect class="box" x="544" y="92" width="116" height="54" rx="4" stroke-width="0.5"/><text class="th" x="602" y="115" text-anchor="middle">Power Automate</text><text class="ts" x="602" y="133" text-anchor="middle">Write-only flow</text></g>
+<g class="c-teal"><rect x="20" y="178" width="116" height="54" rx="4" stroke-width="0.5"/><text class="th" x="78" y="201" text-anchor="middle">Scope gate</text><text class="ts" x="78" y="219" text-anchor="middle">Allowlist check</text></g>
+<g class="c-purple"><rect x="151" y="178" width="378" height="54" rx="4" stroke-width="0.5"/><text class="th" x="340" y="201" text-anchor="middle">LLM gateway</text><text class="ts" x="340" y="219" text-anchor="middle">Provider switch, response cache, fallback to Ollama</text></g>
+<g class="c-amber"><rect x="544" y="178" width="116" height="54" rx="4" stroke-width="0.5"/><text class="th" x="602" y="201" text-anchor="middle">Approval gate</text><text class="ts" x="602" y="219" text-anchor="middle">Write guard, audit</text></g>
+<line class="arr" x1="78" y1="58" x2="78" y2="90" marker-end="url(#arrow)"/><text class="ts" x="86" y="78">read</text>
+<line class="arr" x1="602" y1="90" x2="602" y2="60" marker-end="url(#arrow)"/><text class="ts" x="610" y="78">post</text>
+<line class="arr" x1="78" y1="146" x2="78" y2="176" marker-end="url(#arrow)"/>
+<line class="arr" x1="209" y1="146" x2="209" y2="176" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<line class="arr" x1="405" y1="146" x2="405" y2="176" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<line class="arr" x1="602" y1="176" x2="602" y2="148" marker-end="url(#arrow)"/>
+<rect x="10" y="262" width="660" height="134" rx="8" stroke-width="0.8" stroke="#888780" stroke-dasharray="5 4" fill="none"/>
+<text class="th" x="92" y="282">Live runner</text>
+<text class="ts" x="340" y="282" text-anchor="middle">Coordinator · 5-min tick · cron · catch-up</text>
+<g class="c-teal"><rect x="20" y="294" width="116" height="90" rx="4" stroke-width="0.5"/><circle cx="34" cy="308" r="9" stroke-width="0.5"/><text class="ts" x="34" y="312" text-anchor="middle">1</text><text class="th" x="78" y="326" text-anchor="middle">Ingest</text><text class="ts" x="78" y="346" text-anchor="middle">Delta poll,</text><text class="ts" x="78" y="361" text-anchor="middle">thread replies,</text><text class="ts" x="78" y="376" text-anchor="middle">edits, deletes</text></g>
+<g class="c-purple"><rect x="151" y="294" width="116" height="90" rx="4" stroke-width="0.5"/><circle cx="165" cy="308" r="9" stroke-width="0.5"/><text class="ts" x="165" y="312" text-anchor="middle">2</text><text class="th" x="209" y="326" text-anchor="middle">Detect</text><text class="ts" x="209" y="346" text-anchor="middle">8 rules first,</text><text class="ts" x="209" y="361" text-anchor="middle">then classifier</text><text class="ts" x="209" y="376" text-anchor="middle">labels + score</text></g>
+<g class="c-teal"><rect x="282" y="294" width="116" height="90" rx="4" stroke-width="0.5"/><circle cx="296" cy="308" r="9" stroke-width="0.5"/><text class="ts" x="296" y="312" text-anchor="middle">3</text><text class="th" x="340" y="326" text-anchor="middle">Ledger</text><text class="ts" x="340" y="346" text-anchor="middle">No message,</text><text class="ts" x="340" y="361" text-anchor="middle">Posted, no update,</text><text class="ts" x="340" y="376" text-anchor="middle">Excluded</text></g>
+<g class="c-purple"><rect x="413" y="294" width="116" height="90" rx="4" stroke-width="0.5"/><circle cx="427" cy="308" r="9" stroke-width="0.5"/><text class="ts" x="427" y="312" text-anchor="middle">4</text><text class="th" x="471" y="326" text-anchor="middle">Summarize</text><text class="ts" x="471" y="346" text-anchor="middle">Facts from code,</text><text class="ts" x="471" y="361" text-anchor="middle">model writes prose,</text><text class="ts" x="471" y="376" text-anchor="middle">lines cite source</text></g>
+<g class="c-amber"><rect x="544" y="294" width="116" height="90" rx="4" stroke-width="0.5"/><circle cx="558" cy="308" r="9" stroke-width="0.5"/><text class="ts" x="558" y="312" text-anchor="middle">5</text><text class="th" x="602" y="326" text-anchor="middle">Act</text><text class="ts" x="602" y="346" text-anchor="middle">Digest, weekly,</text><text class="ts" x="602" y="361" text-anchor="middle">nudge, escalate,</text><text class="ts" x="602" y="376" text-anchor="middle">first-use approval</text></g>
+<line class="arr" x1="138" y1="339" x2="149" y2="339" marker-end="url(#arrow)"/>
+<line class="arr" x1="269" y1="339" x2="280" y2="339" marker-end="url(#arrow)"/>
+<line class="arr" x1="400" y1="339" x2="411" y2="339" marker-end="url(#arrow)"/>
+<line class="arr" x1="531" y1="339" x2="542" y2="339" marker-end="url(#arrow)"/>
+<line class="arr" x1="78" y1="232" x2="78" y2="292" marker-end="url(#arrow)"/>
+<line class="arr" x1="209" y1="232" x2="209" y2="292" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<line class="arr" x1="471" y1="232" x2="471" y2="292" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<line class="arr" x1="602" y1="292" x2="602" y2="234" marker-end="url(#arrow)"/>
+<g><rect class="box" x="20" y="426" width="509" height="56" rx="4" stroke-width="0.5"/>
+<path class="box" d="M34 440 v22 a10 4 0 0 0 20 0 v-22 z" stroke-width="0.5"/><ellipse class="box" cx="44" cy="440" rx="10" ry="4" stroke-width="0.5"/>
+<text class="th" x="290" y="449" text-anchor="middle">SQLite (p1_live.db), mirrored to Supabase</text><text class="ts" x="290" y="468" text-anchor="middle">Messages, classifications, ledger, digests, proposals, audit log</text></g>
+<g class="c-amber"><rect x="544" y="426" width="116" height="56" rx="4" stroke-width="0.5"/><text class="th" x="602" y="449" text-anchor="middle">Dashboard</text><text class="ts" x="602" y="468" text-anchor="middle">Streamlit, CLI</text></g>
+<line class="arr" x1="78" y1="384" x2="78" y2="424" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<line class="arr" x1="209" y1="384" x2="209" y2="424" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<line class="arr" x1="340" y1="384" x2="340" y2="424" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<line class="arr" x1="471" y1="384" x2="471" y2="424" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<line class="arr" x1="602" y1="384" x2="602" y2="424" marker-start="url(#arrow)" marker-end="url(#arrow)"/><text class="ts" x="610" y="410">approve</text>
+<g><rect class="box" x="20" y="512" width="247" height="62" rx="4" stroke-width="0.5"/><text class="th" x="143" y="538" text-anchor="middle">Per-channel YAML config</text><text class="ts" x="143" y="558" text-anchor="middle">Roster, window, digest times, nudge cap</text></g>
+<g><rect class="box" x="282" y="512" width="247" height="62" rx="4" stroke-width="0.5"/><text class="th" x="405" y="538" text-anchor="middle">Tests and eval harness</text><text class="ts" x="405" y="558" text-anchor="middle">Golden cases score the rules</text></g>
+<g class="c-amber"><rect x="544" y="512" width="116" height="62" rx="4" stroke-width="0.5"/><circle cx="602" cy="524" r="4" stroke-width="0.5"/><path d="M594 536 q8 -10 16 0" fill="none" stroke-width="1"/><text class="th" x="602" y="553" text-anchor="middle">Channel owner</text><text class="ts" x="602" y="568" text-anchor="middle">Approver</text></g>
+<line class="arr" x1="143" y1="512" x2="143" y2="484" marker-end="url(#arrow)"/>
+<line class="arr" x1="602" y1="512" x2="602" y2="484" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<g class="c-teal"><rect x="20" y="596" width="12" height="12" rx="2" stroke-width="0.5"/></g><text class="ts" x="38" y="606">Deterministic</text>
+<g class="c-purple"><rect x="150" y="596" width="12" height="12" rx="2" stroke-width="0.5"/></g><text class="ts" x="168" y="606">Uses the model</text>
+<g class="c-amber"><rect x="290" y="596" width="12" height="12" rx="2" stroke-width="0.5"/></g><text class="ts" x="308" y="606">Human gate</text>
+<rect class="box" x="410" y="596" width="12" height="12" rx="2" stroke-width="0.5"/><text class="ts" x="428" y="606">External or data store</text>
+</svg>

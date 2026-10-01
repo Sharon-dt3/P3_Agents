@@ -102,6 +102,49 @@ def test_a_markdown_json_fence_is_stripped_before_generate_structured_ever_sees_
     assert parsed == {"label": "chatter", "confidence": 0.8}
 
 
+def test_a_trailing_comma_before_a_closing_bracket_is_stripped(tmp_path):
+    # Live-observed 2026-10-01: a response that was otherwise entirely
+    # correct -- a single-item array -- failed json.loads() purely
+    # because of a trailing comma before the closing ']', the exact
+    # shape '[{"a": 1},]'. Strict JSON never allows this.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"response": '{"lines": [{"message_id": "m1", "text": "Shipped it.", "quote": "shipped"},]}'},
+        )
+
+    gateway = _gateway(tmp_path, handler)
+
+    response = gateway.generate(
+        "Write the digest.", tools=[CLASSIFICATION_TOOL], tool_choice=CLASSIFICATION_TOOL_CHOICE, skip_cache=True,
+    )
+
+    parsed = json.loads(response.text)
+    assert parsed == {"lines": [{"message_id": "m1", "text": "Shipped it.", "quote": "shipped"}]}
+
+
+def test_a_comma_inside_the_models_own_prose_is_never_touched(tmp_path):
+    # The fix must not corrupt a real comma that is part of a message's
+    # own text, even when that text itself ends close to a quote mark --
+    # only a comma directly followed by a closing ] or } (with only
+    # whitespace between) is ever touched.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"response": '{"lines": [{"message_id": "m1", "text": "Done, shipped it.", "quote": "Done, shipped"}]}'},
+        )
+
+    gateway = _gateway(tmp_path, handler)
+
+    response = gateway.generate(
+        "Write the digest.", tools=[CLASSIFICATION_TOOL], tool_choice=CLASSIFICATION_TOOL_CHOICE, skip_cache=True,
+    )
+
+    parsed = json.loads(response.text)
+    assert parsed["lines"][0]["text"] == "Done, shipped it."
+    assert parsed["lines"][0]["quote"] == "Done, shipped"
+
+
 def test_end_to_end_through_generate_structured_actually_parses(tmp_path):
     # The real acceptance test: this is the exact call shape
     # detection.classifier.classify_message makes, going through

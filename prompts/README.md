@@ -35,13 +35,36 @@ reproducible against the version they actually used.
 - `chn09_classify_message` (CHN-09) -- classifies a single message that
   CHN-08's deterministic rules left unsettled into one of six labels
   (update, question, blocker, decision, chatter, noise) plus a
-  confidence. Current version: v1.
+  confidence. Current version: v2 (2026-10-01) -- v1 only ever produced
+  that one dominant label per message, so a bulky message mixing real
+  content types (some progress, plus a genuine embedded blocker or
+  question) could only ever land in one digest section, under
+  whichever type was dominant; v2 additionally asks for an optional,
+  per-point breakdown (`ClassificationResult.points`) when a message
+  genuinely contains more than one distinct thing, each point carrying
+  its own label -- empty for the ordinary single-point message, which
+  is most of them. The one dominant (label, confidence) pair stays
+  exactly as v1 produced it and is still the only thing persisted to
+  the `classifications` table -- rules.py, the participation ledger,
+  and every existing golden-case eval are unaffected; `points` is
+  purely additive, stored separately (`classification_points`,
+  migration 0007), consumed only by digest rendering.
 
 - `chn13_daily_summary` (CHN-13) -- turns one content section's worth
   of already-gathered facts (what moved / blockers raised / decisions
-  taken / questions still awaiting an answer) into one line of grounded
-  prose per fact, never deciding what counts as a fact itself. Current
-  version: v1.
+  taken / questions still awaiting an answer) into grounded prose, never
+  deciding what counts as a fact itself. Current version: v2 -- v1 wrote
+  exactly one line per fact regardless of how many distinct points that
+  fact's own message actually contained, silently compressing a bulky,
+  multi-point update into a single sentence; v2 (2026-10-01) asks for
+  one line per distinct point within an item instead, so a long update
+  is treated as the several facts it actually is, not one. Current
+  version: v3 (2026-10-01) -- v2, live-observed, sometimes over-split a
+  single long-but-coherent sentence at its own "and"s into run-on
+  fragments that only read correctly as a continuation of the line
+  before them; v3 adds an explicit "a distinct point is a separate
+  thing, not every clause joined by 'and'" rule, plus a standalone-
+  sentence requirement for every line.
 
 - `ollama_schema_instructions` (2026-09-20, alongside CHN-27's ollama
   tool-schema fix) -- not tied to one capability: this is the wrapper

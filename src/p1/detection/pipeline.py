@@ -44,6 +44,7 @@ from p1.detection.classifier import (
 )
 from p1.detection.rules import evaluate_message
 from p1.prompts import PromptRegistry
+from p1.storage.classification_points_repo import ClassificationPointsStore
 from p1.storage.classifications_repo import ClassificationStore
 from p1.storage.db import DEFAULT_DB_PATH
 
@@ -96,6 +97,7 @@ def classify_and_persist(
     that answers one request at a time, so anything else needing the model
     -- including the real 17:30 digest -- queued behind it and timed out."""
     store = ClassificationStore(db_path)
+    points_store = ClassificationPointsStore(db_path)
     outcomes: list[ClassificationOutcome] = []
     stored_verdicts = store.model_verdicts() if reuse_model_verdicts else {}
 
@@ -157,6 +159,19 @@ def classify_and_persist(
             method="model",
             confidence=result.confidence,
             rule_name=None,
+        )
+        # Purely additive: the per-point breakdown (empty for most
+        # messages -- see ClassificationResult.points' own docstring)
+        # feeds only digest rendering, never rules.py, the participation
+        # ledger, or any existing golden-case eval -- none of them read
+        # this table. replace_for_message() clears any stale prior
+        # breakdown even when points is empty, so a message that WAS
+        # multi-point and is re-classified into no longer being so (an
+        # edit, a prompt-version bump) never leaves orphaned old points
+        # behind.
+        points_store.replace_for_message(
+            message_id=message.id,
+            points=[(p.label, p.point_text, p.confidence) for p in result.points],
         )
         outcomes.append(
             ClassificationOutcome(

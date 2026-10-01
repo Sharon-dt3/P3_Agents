@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,6 +75,29 @@ def _strip_markdown_json_fence(text: str) -> str:
             lines = lines[:-1]
         stripped = "\n".join(lines).strip()
     return stripped
+
+
+_TRAILING_COMMA_RE = re.compile(r",(\s*[\]}])")
+
+
+def _strip_trailing_commas(text: str) -> str:
+    """Remove a comma immediately before a closing ] or } -- e.g.
+    '[{"a": 1},]' -> '[{"a": 1}]'. Strict JSON (unlike Python/JS) never
+    allows this, but a local model asked for a LIST of items -- exactly
+    what every structured-output schema in this codebase uses, lines/
+    points/facts all being arrays -- will sometimes leave a trailing
+    comma as if another element were about to follow, live-observed
+    2026-10-01 producing json.JSONDecodeError on an otherwise entirely
+    correct response (a single-item array: '...}, ]}'). Same reasoning
+    as _strip_markdown_json_fence just above: fixing a response that
+    was already correct in substance is strictly better than spending
+    one of generate_structured()'s limited retry attempts -- a fresh
+    model call -- on a shape this codebase can already recognize and
+    repair for free. A real comma that is part of a string VALUE's own
+    text is untouched: the pattern only matches a comma directly
+    followed by a closing bracket, with only whitespace between them,
+    which valid prose content essentially never does by coincidence."""
+    return _TRAILING_COMMA_RE.sub(r"\1", text)
 
 
 def _example_instance(schema: dict, defs: dict | None = None):
@@ -427,7 +451,7 @@ class LLMGateway:
         except httpx.HTTPError as exc:
             raise LLMGatewayError(f"Ollama request failed: {exc}") from exc
 
-        text = _strip_markdown_json_fence(data.get("response", ""))
+        text = _strip_trailing_commas(_strip_markdown_json_fence(data.get("response", "")))
         in_tok = data.get("prompt_eval_count", 0)
         out_tok = data.get("eval_count", 0)
         return text, self.ollama_model, in_tok, out_tok

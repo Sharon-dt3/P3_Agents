@@ -126,6 +126,7 @@ class DailySummaryResult:
     section_lines: dict[str, list[FactualLine]]
     dropped: dict[str, list[GroundingFailure]]
     participation: list[ParticipationRecord]
+    answered_questions: list[DailyFact]
     content: str
 
 
@@ -179,6 +180,7 @@ def _render_digest_markdown(
     section_lines: dict[str, list[FactualLine]],
     permalink_by_id: dict[str, str],
     participation: list[ParticipationRecord],
+    answered_questions: list[DailyFact],
     *,
     db_path: str | Path = DEFAULT_DB_PATH,
     roster_size: int | None = None,
@@ -195,6 +197,25 @@ def _render_digest_markdown(
                 permalink = permalink_by_id.get(line.message_id, "")
                 parts.append(f"- {line.text} ([source]({permalink}))")
         parts.append("")
+
+        # Rendered directly from code, right after "questions still
+        # awaiting an answer", never through the model -- "was this
+        # answered" is already a deterministic, code-computed fact (see
+        # facts._answered_question_ids), no prose judgment call for a
+        # model to make. Without this, a question correctly detected
+        # AND correctly found answered rendered identically to one
+        # never detected as a question at all -- both were just absent
+        # (2026-10-01, see DECISION_LOG.md). This makes that real,
+        # otherwise invisible distinction provable from the digest
+        # itself, not just from the database.
+        if section == "questions":
+            parts.append("## Questions answered today")
+            if not answered_questions:
+                parts.append("- No questions were answered today.")
+            else:
+                for fact in answered_questions:
+                    parts.append(f"- {fact.body_raw} ([source]({fact.permalink})) — answered.")
+            parts.append("")
 
     parts.extend(render_participation_section(participation, db_path=db_path, roster_size=roster_size))
 
@@ -213,7 +234,7 @@ def generate_daily_summary(
     registry = prompt_registry or PromptRegistry()
     prompt = registry.get(DAILY_SUMMARY_CAPABILITY)
 
-    facts_by_section, permalink_by_id = gather_daily_facts(channel_id, day, config, db_path)
+    facts_by_section, permalink_by_id, answered_questions = gather_daily_facts(channel_id, day, config, db_path)
 
     section_lines: dict[str, list[FactualLine]] = {}
     dropped: dict[str, list[GroundingFailure]] = {}
@@ -227,7 +248,7 @@ def generate_daily_summary(
     participation = build_ledger(channel_id, day, config, db_path=db_path)
 
     content = _render_digest_markdown(
-        config.display_name, day, section_lines, permalink_by_id, participation,
+        config.display_name, day, section_lines, permalink_by_id, participation, answered_questions,
         db_path=db_path, roster_size=len(config.roster),
     )
 
@@ -237,6 +258,7 @@ def generate_daily_summary(
         section_lines=section_lines,
         dropped=dropped,
         participation=participation,
+        answered_questions=answered_questions,
         content=content,
     )
 
