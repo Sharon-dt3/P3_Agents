@@ -50,7 +50,7 @@ never left for the model to fill in with invented content.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date as date_type
 from pathlib import Path
 
@@ -67,6 +67,7 @@ from p1.grounding.kernel import (
 from p1.llm.structured import generate_structured
 from p1.participation.ledger import ParticipationRecord, build_ledger
 from p1.prompts import Prompt, PromptRegistry
+from p1.reporting.blocker_followup import FollowUp, find_blocker_followups
 from p1.reporting.facts import (
     SECTION_ORDER,
     DailyFact,
@@ -128,6 +129,7 @@ class DailySummaryResult:
     participation: list[ParticipationRecord]
     answered_questions: list[DailyFact]
     content: str
+    blocker_follow_ups: dict[int, FollowUp] = field(default_factory=dict)
 
 
 # The model writes a line (or several) per fact. A fixed 1024-token answer limit was enough for a quiet day,
@@ -197,6 +199,7 @@ def _render_digest_markdown(
     *,
     db_path: str | Path = DEFAULT_DB_PATH,
     roster_size: int | None = None,
+    blocker_follow_ups: dict[int, FollowUp] | None = None,
 ) -> str:
     parts = [f"# {display_name} — Daily Summary ({day.isoformat()})", ""]
 
@@ -206,9 +209,14 @@ def _render_digest_markdown(
         if not lines:
             parts.append(f"- {_EMPTY_SECTION_TEXT[section]}")
         else:
-            for line in lines:
+            for number, line in enumerate(lines, start=1):
                 permalink = permalink_by_id.get(line.message_id, "")
-                parts.append(f"- {line.text} ([source]({permalink}))")
+                note = ""
+                follow_up = (blocker_follow_ups or {}).get(number) if section == "blockers" else None
+                if follow_up is not None:
+                    # Checked in code (see blocker_followup): the words and a link, not a claim that it is resolved.
+                    note = f" — later today: “{follow_up.quote}” ([source]({follow_up.permalink}))"
+                parts.append(f"- {line.text} ([source]({permalink})){note}")
         parts.append("")
 
         # Rendered directly from code, right after "questions still
@@ -258,11 +266,20 @@ def generate_daily_summary(
         section_lines[section] = result.grounded_lines
         dropped[section] = result.failures
 
+    blocker_follow_ups = find_blocker_followups(
+        gateway,
+        registry,
+        section_lines["blockers"],
+        {fact.message_id: [fact] for fact in facts_by_section["blockers"]},
+        [fact for section in SECTION_ORDER for fact in facts_by_section[section]],
+        permalink_by_id,
+    )
+
     participation = build_ledger(channel_id, day, config, db_path=db_path)
 
     content = _render_digest_markdown(
         config.display_name, day, section_lines, permalink_by_id, participation, answered_questions,
-        db_path=db_path, roster_size=len(config.roster),
+        db_path=db_path, roster_size=len(config.roster), blocker_follow_ups=blocker_follow_ups,
     )
 
     return DailySummaryResult(
@@ -273,6 +290,7 @@ def generate_daily_summary(
         participation=participation,
         answered_questions=answered_questions,
         content=content,
+        blocker_follow_ups=blocker_follow_ups,
     )
 
 

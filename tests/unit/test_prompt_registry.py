@@ -97,5 +97,9 @@ def test_the_live_prompts_keep_the_rules_added_after_live_failures():
     assert "never gets its own point" in classifier.text  # a hedging trailing sentence
 
     summary = registry.get("chn13_daily_summary")
-    assert int(summary.version.lstrip("v")) >= 4
+    assert int(summary.version.lstrip("v")) >= 5
     assert "never reorder its words" in summary.text  # the author's own labels stay intact
+    assert "do not give it a line of its own" in summary.text  # a hedging sentence is not its own bullet
+
+    followup = registry.get("chn13_blocker_followup")
+    assert "B1, B2" in followup.text  # blockers are labelled, not counted (a model answered 0 for the first)

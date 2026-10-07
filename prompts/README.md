@@ -67,10 +67,23 @@ reproducible against the version they actually used.
   sentence requirement for every line. Current version: v4 (2026-10-07) --
   v3 reversed the meaning of a label the author used: "the source links
   work on the posted but no update lines" came out as "on posted lines but
-  not on update lines" in 6 of 6 runs. v4 adds a rule that the author's own
+  not on update lines" in 6 of 6 runs. Current version: v5 (2026-10-07) -- v4 still gave a hedging sentence its own
+  line ("not saying we change it, just flagging" came out as its own bullet; 3 such
+  lines per run on the live day). v5 adds one sentence inside the "distinct point"
+  paragraph: a sentence that only qualifies the point before it goes into that
+  point's line as a short clause, or is left out. Measured on the same day: 3 filler
+  lines per run became 1, the "posted but no update" label stayed intact 3/3, and
+  the digest kept its third-person wording. A first attempt that added a separate
+  rule instead made the writer copy first-person sentences ("I'll keep going on...")
+  verbatim and was discarded. v4 adds a rule that the author's own
   names, labels and status words stay intact as one unit (and are quoted
   rather than rephrased when unclear); the same message kept the phrase in
   6 of 6 runs.
+
+- `chn13_blocker_followup` (2026-10-07) -- given the day's blockers (labelled B1, B2, ...)
+  and the messages posted after them, says which later message, if any, states that the
+  same blocker is sorted out, with an exact quote. The answer is checked in code before
+  anything is shown (see `p1/reporting/blocker_followup.py`). Current version: v1.
 
 - `ollama_schema_instructions` (2026-09-20, alongside CHN-27's ollama
   tool-schema fix) -- not tied to one capability: this is the wrapper

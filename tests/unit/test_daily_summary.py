@@ -711,3 +711,205 @@ def test_daily_summary_capability_prompt_is_loaded_from_the_registry():
     assert prompt.capability == "chn13_daily_summary"
     for placeholder in ("{section_label}", "{facts_block}", "{feedback_block}"):
         assert placeholder in prompt.text
+
+
+# --- a blocker that a later message says is sorted out --------------------
+# Live, 2026-10-07: a blocker raised at 14:39 and a message at 14:40 saying the new key arrived and it works
+# again both appeared, the first under "Blockers raised" with nothing to say it had moved on.
+
+BLOCKER_AT = "2025-06-02T09:10:00+05:30"
+LATER_AT = "2025-06-02T09:40:00+05:30"
+EARLIER_AT = "2025-06-02T09:00:00+05:30"
+FIXED_TEXT = "The new staging credentials arrived and the deploy works again."
+
+
+def _followup(blocker, later_message_id, quote) -> str:
+    """blocker: the label the model sees ("B1", "B2", ...) or a bare number."""
+    label = f"B{blocker}" if isinstance(blocker, int) else blocker
+    return json.dumps({"follow_ups": [{"blocker_id": label, "later_message_id": later_message_id, "quote": quote}]})
+
+
+def _blocker_day(db_path, *, later_at=LATER_AT, later_body=FIXED_TEXT):
+    _seed_fact(
+        db_path, message_id="m-blocker", author_id="bob", label="blocker",
+        body="Blocked on the staging credentials rotating.", permalink="https://t/m-blocker", posted_at=BLOCKER_AT,
+    )
+    _seed_fact(
+        db_path, message_id="m-fix", author_id="alice", label="update",
+        body=later_body, permalink="https://t/m-fix", posted_at=later_at,
+    )
+
+
+def _two_sections(*follow_up_texts):
+    return [
+        _draft(_line("m-fix", "The staging deploy works again.")),
+        _draft(_line("m-blocker", "Bob is blocked on the staging credentials rotating.")),
+        *follow_up_texts,
+    ]
+
+
+def test_a_blocker_a_later_message_says_is_sorted_gets_that_message_quoted_next_to_it(db_path):
+    _blocker_day(db_path)
+    gateway = FakeGateway(_two_sections(_followup(1, "m-fix", "The new staging credentials arrived")))
+
+    result = generate_daily_summary(CHANNEL_ID, DAY, make_config(), gateway, db_path=db_path)
+
+    blocker_line = next(l for l in result.content.splitlines() if "Bob is blocked" in l)
+    assert "later today" in blocker_line
+    assert "“The new staging credentials arrived”" in blocker_line
+    assert "https://t/m-fix" in blocker_line
+    assert "https://t/m-blocker" in blocker_line  # still sourced to the blocker itself
+    assert "Blockers raised" in result.content  # the blocker is still reported, not removed
+
+
+def test_only_the_blocker_the_model_points_at_is_annotated(db_path):
+    _seed_fact(
+        db_path, message_id="m-blocker", author_id="bob", label="blocker",
+        body="Blocked on the staging credentials rotating.", permalink="https://t/m-blocker", posted_at=BLOCKER_AT,
+    )
+    _seed_fact(
+        db_path, message_id="m-blocker2", author_id="carol", label="blocker",
+        body="The vendor has not sent the API contract.", permalink="https://t/m-blocker2",
+        posted_at="2025-06-02T09:12:00+05:30",
+    )
+    _seed_fact(
+        db_path, message_id="m-fix", author_id="alice", label="update",
+        body=FIXED_TEXT, permalink="https://t/m-fix", posted_at=LATER_AT,
+    )
+    gateway = FakeGateway([
+        _draft(_line("m-fix", "The staging deploy works again.")),
+        _draft(
+            _line("m-blocker", "Bob is blocked on the staging credentials rotating."),
+            _line("m-blocker2", "Carol is waiting for the vendor's API contract."),
+        ),
+        _followup(1, "m-fix", "The new staging credentials arrived"),
+    ])
+
+    result = generate_daily_summary(CHANNEL_ID, DAY, make_config(), gateway, db_path=db_path)
+
+    bob = next(l for l in result.content.splitlines() if "Bob is blocked" in l)
+    carol = next(l for l in result.content.splitlines() if "Carol is waiting" in l)
+    assert "later today" in bob
+    assert "later today" not in carol
+
+
+def test_nothing_is_added_when_the_model_finds_no_follow_up(db_path):
+    _blocker_day(db_path)
+    gateway = FakeGateway(_two_sections(json.dumps({"follow_ups": []})))
+
+    result = generate_daily_summary(CHANNEL_ID, DAY, make_config(), gateway, db_path=db_path)
+
+    assert "later today" not in result.content
+
+
+@pytest.mark.parametrize("bad_follow_up, why", [
+    (_followup(1, "m-fix", "the credentials were sorted out hours ago"), "a quote that is not in the message"),
+    (_followup(1, "m-made-up", "The new staging credentials arrived"), "a message that does not exist"),
+    (_followup(1, "m-blocker", "Blocked on the staging credentials"), "the blocker's own message"),
+    (_followup(7, "m-fix", "The new staging credentials arrived"), "a blocker that does not exist"),
+    (_followup(0, "m-fix", "The new staging credentials arrived"), "a blocker numbered 0 (counting from zero is not a guess to make)"),
+    (_followup("the staging one", "m-fix", "The new staging credentials arrived"), "a blocker label that is not one we gave"),
+    (_followup(1, "m-fix", "arrived"), "a quote too short to mean anything"),
+])
+def test_a_follow_up_that_cannot_be_checked_is_dropped(db_path, bad_follow_up, why):
+    _blocker_day(db_path)
+    gateway = FakeGateway(_two_sections(bad_follow_up))
+
+    result = generate_daily_summary(CHANNEL_ID, DAY, make_config(), gateway, db_path=db_path)
+
+    assert "later today" not in result.content, why
+
+
+def test_a_message_posted_before_the_blocker_cannot_be_its_follow_up(db_path):
+    _blocker_day(db_path, later_at=EARLIER_AT)  # the "fix" was posted before the blocker was raised
+    gateway = FakeGateway([
+        _draft(_line("m-fix", "The staging deploy works again.")),
+        _draft(_line("m-blocker", "Bob is blocked on the staging credentials rotating.")),
+    ])
+
+    result = generate_daily_summary(CHANNEL_ID, DAY, make_config(), gateway, db_path=db_path)
+
+    assert gateway.calls == 2  # nothing later than the blocker, so the model is not even asked
+    assert "later today" not in result.content
+
+
+def test_a_model_that_answers_nonsense_leaves_the_digest_as_it_was(db_path):
+    _blocker_day(db_path)
+    plain = FakeGateway(_two_sections(json.dumps({"follow_ups": []})))
+    broken = FakeGateway(_two_sections("not json at all", "still not json", "nope"))
+
+    expected = generate_daily_summary(CHANNEL_ID, DAY, make_config(), plain, db_path=db_path).content
+    result = generate_daily_summary(CHANNEL_ID, DAY, make_config(), broken, db_path=db_path)
+
+    assert result.content == expected
+
+
+def test_no_blockers_means_no_extra_model_call(db_path):
+    _seed_fact(db_path, message_id="m-fix", author_id="alice", label="update", body=FIXED_TEXT, posted_at=LATER_AT)
+    gateway = FakeGateway([_draft(_line("m-fix", "The staging deploy works again."))])
+
+    generate_daily_summary(CHANNEL_ID, DAY, make_config(), gateway, db_path=db_path)
+
+    assert gateway.calls == 1
+
+
+def test_it_can_be_switched_off(db_path, monkeypatch):
+    monkeypatch.setenv("P1_BLOCKER_FOLLOWUPS", "0")
+    _blocker_day(db_path)
+    gateway = FakeGateway([
+        _draft(_line("m-fix", "The staging deploy works again.")),
+        _draft(_line("m-blocker", "Bob is blocked on the staging credentials rotating.")),
+    ])
+
+    result = generate_daily_summary(CHANNEL_ID, DAY, make_config(), gateway, db_path=db_path)
+
+    assert gateway.calls == 2 and "later today" not in result.content
+
+
+def test_the_follow_up_does_not_change_anything_but_the_one_blocker_line(db_path):
+    _blocker_day(db_path)
+    without = generate_daily_summary(
+        CHANNEL_ID, DAY, make_config(), FakeGateway(_two_sections(json.dumps({"follow_ups": []}))), db_path=db_path,
+    )
+    with_it = generate_daily_summary(
+        CHANNEL_ID, DAY, make_config(), FakeGateway(_two_sections(_followup(1, "m-fix", "The new staging credentials arrived"))),
+        db_path=db_path,
+    )
+
+    a, b = without.content.splitlines(), with_it.content.splitlines()
+    changed = [(x, y) for x, y in zip(a, b) if x != y]
+    assert len(a) == len(b) and len(changed) == 1
+    assert changed[0][1].startswith(changed[0][0])  # the same line, with the note added after it
+    assert without.section_lines == with_it.section_lines
+
+
+def test_a_quote_is_checked_against_the_plain_text_of_a_message_posted_as_html(db_path):
+    _blocker_day(db_path, later_body="<p>The new staging&nbsp;credentials arrived and the deploy works again.&nbsp;</p>")
+    gateway = FakeGateway(_two_sections(_followup(1, "m-fix", "The new staging credentials arrived")))
+
+    result = generate_daily_summary(CHANNEL_ID, DAY, make_config(), gateway, db_path=db_path)
+
+    assert "later today" in result.content
+
+
+def test_one_follow_up_that_does_not_check_out_does_not_cost_the_valid_one_beside_it(db_path):
+    _blocker_day(db_path)
+    mixed = json.dumps({"follow_ups": [
+        {"blocker_id": "B1", "later_message_id": "m-made-up", "quote": "The new staging credentials arrived"},
+        {"blocker_id": "B1", "later_message_id": "m-fix", "quote": "The new staging credentials arrived"},
+    ]})
+    gateway = FakeGateway(_two_sections(mixed))
+
+    result = generate_daily_summary(CHANNEL_ID, DAY, make_config(), gateway, db_path=db_path)
+
+    assert "https://t/m-fix" in next(l for l in result.content.splitlines() if "Bob is blocked" in l)
+
+
+def test_the_blocker_may_be_given_as_a_bare_number_or_a_lower_case_label(db_path):
+    for label in ("1", "b1", " B1 "):
+        _blocker_day(db_path)
+        gateway = FakeGateway(_two_sections(_followup(label, "m-fix", "The new staging credentials arrived")))
+
+        result = generate_daily_summary(CHANNEL_ID, DAY, make_config(), gateway, db_path=db_path)
+
+        assert "later today" in result.content, label

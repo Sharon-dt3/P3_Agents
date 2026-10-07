@@ -74,6 +74,7 @@ class DailyFact:
     body_raw: str
     permalink: str
     label: str
+    posted_at: str = ""
 
 
 def gather_daily_facts(
@@ -160,6 +161,7 @@ def gather_daily_facts(
             body_raw=item["body_raw"],
             permalink=item["permalink"],
             label=item["label"],
+            posted_at=item["posted_at"],
         )
         permalink_by_id[item["message_id"]] = item["permalink"]
         if item["label"] == "question" and item["message_id"] in answered:
