@@ -453,6 +453,46 @@ def test_a_question_answered_only_by_a_deleted_reply_is_still_awaiting_an_answer
     assert [line.message_id for line in result.section_lines["questions"]] == ["m-q3"]
 
 
+def test_the_askers_own_follow_up_in_the_thread_does_not_answer_their_question(db_path):
+    """A person adding a second message to their own question's thread has
+    not been answered by anyone (live, 2026-10-07: a question and its
+    own-author follow-up moved the question to 'answered')."""
+    _seed_fact(
+        db_path, message_id="m-q5", author_id="alice", label="question",
+        body="Should we roll this out today?",
+    )
+    own_follow_up = _message(
+        id="m-q5-own", author_id="alice", body="I would lean towards waiting, but unsure.",
+        thread_root_id="m-q5", posted_at="2025-06-02T09:45:00+05:30",
+    )
+    MessageStore(db_path).upsert_messages([own_follow_up])
+
+    gateway = FakeGateway([_draft(_line("m-q5", "Alice is asking whether to roll this out today."))])
+    result = generate_daily_summary(CHANNEL_ID, DAY, make_config(), gateway, db_path=db_path)
+
+    assert [line.message_id for line in result.section_lines["questions"]] == ["m-q5"]
+    assert result.answered_questions == []
+
+
+def test_another_persons_reply_still_answers_it_even_when_the_asker_also_followed_up(db_path):
+    _seed_fact(
+        db_path, message_id="m-q6", author_id="alice", label="question",
+        body="Should we roll this out today?",
+    )
+    MessageStore(db_path).upsert_messages([
+        _message(id="m-q6-own", author_id="alice", body="Bumping this, any thoughts?",
+                 thread_root_id="m-q6", posted_at="2025-06-02T09:40:00+05:30"),
+        _message(id="m-q6-bob", author_id="bob", body="Yes, go ahead.",
+                 thread_root_id="m-q6", posted_at="2025-06-02T09:45:00+05:30"),
+    ])
+
+    gateway = FakeGateway([])
+    result = generate_daily_summary(CHANNEL_ID, DAY, make_config(), gateway, db_path=db_path)
+
+    assert result.section_lines["questions"] == []
+    assert [f.message_id for f in result.answered_questions] == ["m-q6"]
+
+
 # --- grounding: only this section's own facts can ground a line ----------
 
 def test_a_line_claiming_a_real_but_unrelated_message_id_is_dropped_not_kept(db_path):

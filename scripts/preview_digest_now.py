@@ -66,6 +66,18 @@ CHANNELS = {
 }
 
 
+def _model_label(gateway) -> str:
+    """The model the configured provider will actually call. (This line used to print the Ollama
+    fallback's model name whatever the provider was, which read as if a local model was in use.)"""
+    provider = gateway.provider
+    if provider == "bedrock":
+        model = gateway.bedrock_model_id or ""
+        return f"bedrock ({model.rsplit('/', 1)[-1] or 'model id not set'})"
+    if provider == "ollama":
+        return f"ollama ({gateway.ollama_model})"
+    return f"{provider} ({gateway.anthropic_model})"
+
+
 def _plain(html: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html or "")).strip()
 
@@ -129,7 +141,7 @@ def main() -> int:
 
     todays = [m for m in _load_channel_messages(LIVE_DB_PATH, channel_id) if to_local(m.posted_at, config.timezone).date() == day]
     gateway = LLMGateway()
-    print(f"Classifying {len(todays)} message(s) from {day.isoformat()} with model {gateway.ollama_model} ...")
+    print(f"Classifying {len(todays)} message(s) from {day.isoformat()} with {_model_label(gateway)} ...")
     outcomes = {o.message_id: o for o in classify_and_persist(todays, config, gateway, db_path=LIVE_DB_PATH)}
 
     print()

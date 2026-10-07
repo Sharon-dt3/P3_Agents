@@ -35,7 +35,7 @@ reproducible against the version they actually used.
 - `chn09_classify_message` (CHN-09) -- classifies a single message that
   CHN-08's deterministic rules left unsettled into one of six labels
   (update, question, blocker, decision, chatter, noise) plus a
-  confidence. Current version: v2 (2026-10-01) -- v1 only ever produced
+  confidence. Current version: v3 (2026-10-07) -- v2, run five times each on a live bulky message, labelled "yeah same thing happened to me ... I got a new key and it works again" as chatter every time (the update inside it never reached the digest) and listed a hedging trailing sentence ("Haven't switched anything on though.") as an update point of its own every time; v3 says a message that only OPENS with agreement but then reports something new is not chatter, and that a sentence which only qualifies the one before it is folded into it. Measured on the same messages: the first became an update 5/5, the second disappeared 5/5, and four other live messages kept their labels and points. Earlier version: v2 (2026-10-01) -- v1 only ever produced
   that one dominant label per message, so a bulky message mixing real
   content types (some progress, plus a genuine embedded blocker or
   question) could only ever land in one digest section, under
@@ -64,7 +64,13 @@ reproducible against the version they actually used.
   fragments that only read correctly as a continuation of the line
   before them; v3 adds an explicit "a distinct point is a separate
   thing, not every clause joined by 'and'" rule, plus a standalone-
-  sentence requirement for every line.
+  sentence requirement for every line. Current version: v4 (2026-10-07) --
+  v3 reversed the meaning of a label the author used: "the source links
+  work on the posted but no update lines" came out as "on posted lines but
+  not on update lines" in 6 of 6 runs. v4 adds a rule that the author's own
+  names, labels and status words stay intact as one unit (and are quoted
+  rather than rephrased when unclear); the same message kept the phrase in
+  6 of 6 runs.
 
 - `ollama_schema_instructions` (2026-09-20, alongside CHN-27's ollama
   tool-schema fix) -- not tied to one capability: this is the wrapper

@@ -188,7 +188,12 @@ def _answered_question_ids(conn, question_rows: list) -> set[str]:
     in the same thread also points at that same root, never at the
     question's own id. Each question's EFFECTIVE thread id is therefore
     its own thread_root_id when it has one, falling back to its own id
-    only when the question itself is the thread's root."""
+    only when the question itself is the thread's root.
+
+    The asker's own later messages do not count: a person adding to their
+    own question's thread has not been answered by anyone (live,
+    2026-10-07: a question and the same author's follow-up in its thread
+    moved the question to "answered"). Only a message from someone else does."""
     if not question_rows:
         return set()
 
@@ -196,11 +201,12 @@ def _answered_question_ids(conn, question_rows: list) -> set[str]:
         row["message_id"]: (row["thread_root_id"] or row["message_id"]) for row in question_rows
     }
     question_posted_at = {row["message_id"]: row["posted_at"] for row in question_rows}
+    question_author = {row["message_id"]: row["author_id"] for row in question_rows}
     thread_ids = sorted(set(effective_thread_id.values()))
 
     placeholders = ", ".join("?" for _ in thread_ids)
     sql = (
-        "SELECT id, thread_root_id, posted_at FROM messages "
+        "SELECT id, author_id, thread_root_id, posted_at FROM messages "
         f"WHERE thread_root_id IN ({placeholders}) AND is_deleted = 0"
     )
     reply_rows = conn.execute(sql, thread_ids).fetchall()
@@ -210,6 +216,8 @@ def _answered_question_ids(conn, question_rows: list) -> set[str]:
         q_posted_at = question_posted_at[qid]
         for row in reply_rows:
             if row["thread_root_id"] != tid or row["id"] == qid or row["posted_at"] <= q_posted_at:
+                continue
+            if row["author_id"] == question_author[qid]:
                 continue
             answered.add(qid)
             break

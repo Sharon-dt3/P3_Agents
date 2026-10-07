@@ -84,3 +84,18 @@ def test_render_raises_on_missing_placeholder_rather_than_leaving_it_unfilled():
     prompt = Prompt(capability="c", version="v1", text="Classify: {message}")
     with pytest.raises(ValueError):
         prompt.render()
+
+
+def test_the_live_prompts_keep_the_rules_added_after_live_failures():
+    """2026-10-07: each rule below fixed something seen on real messages. A later version
+    must keep them (a new version file starts as a copy of the last one)."""
+    registry = PromptRegistry()
+
+    classifier = registry.get("chn09_classify_message")
+    assert int(classifier.version.lstrip("v")) >= 3
+    assert "is NOT chatter" in classifier.text  # agreement that opens a message with real content in it
+    assert "never gets its own point" in classifier.text  # a hedging trailing sentence
+
+    summary = registry.get("chn13_daily_summary")
+    assert int(summary.version.lstrip("v")) >= 4
+    assert "never reorder its words" in summary.text  # the author's own labels stay intact
