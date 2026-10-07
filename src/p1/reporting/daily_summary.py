@@ -130,6 +130,18 @@ class DailySummaryResult:
     content: str
 
 
+# The model writes a line (or several) per fact. A fixed 1024-token answer limit was enough for a quiet day,
+# but a busy section is cut off mid-answer, which comes back empty and fails the whole digest (live, 2026-10-07:
+# seven "what moved" facts, three attempts, each stopped at exactly 1024). The room grows with the facts.
+_MIN_ANSWER_TOKENS = 1024
+_TOKENS_PER_FACT = 600
+_MAX_ANSWER_TOKENS = 8192
+
+
+def _answer_budget(fact_count: int) -> int:
+    return max(_MIN_ANSWER_TOKENS, min(_MAX_ANSWER_TOKENS, _TOKENS_PER_FACT * fact_count))
+
+
 def _generate_section_lines(
     gateway,
     prompt: Prompt,
@@ -165,6 +177,7 @@ def _generate_section_lines(
         )
         draft = generate_structured(
             gateway, rendered, DailySummarySectionDraft, tool_name="daily_summary_section",
+            max_tokens=_answer_budget(len(facts)),
         )
         return [
             FactualLine(text=line.text, message_id=line.message_id, quote=line.quote)

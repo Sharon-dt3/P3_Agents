@@ -493,6 +493,42 @@ def test_another_persons_reply_still_answers_it_even_when_the_asker_also_followe
     assert [f.message_id for f in result.answered_questions] == ["m-q6"]
 
 
+class _BudgetRecordingGateway(FakeGateway):
+    def __init__(self, texts):
+        super().__init__(texts)
+        self.max_tokens = []
+
+    def generate(self, prompt, **kwargs):
+        self.max_tokens.append(kwargs.get("max_tokens"))
+        return super().generate(prompt, **kwargs)
+
+
+def test_a_busy_section_is_given_room_for_its_whole_answer(db_path):
+    """Live, 2026-10-07: seven 'what moved' facts made the model's answer longer than the fixed 1024-token
+    limit; it was cut off mid-answer, came back empty three times, and the whole digest failed."""
+    ids = [f"m-busy{n}" for n in range(8)]
+    for n, mid in enumerate(ids):
+        _seed_fact(
+            db_path, message_id=mid, author_id="alice", label="update",
+            body=f"Finished piece {n} of the export work and ran its tests.",
+            posted_at=f"2025-06-02T09:{10 + n}:00+05:30",
+        )
+    gateway = _BudgetRecordingGateway([_draft(*[_line(mid, f"Piece {n} was finished.") for n, mid in enumerate(ids)])])
+
+    generate_daily_summary(CHANNEL_ID, DAY, make_config(), gateway, db_path=db_path)
+
+    assert gateway.max_tokens[0] > 2048  # eight facts: well beyond the old fixed 1024
+
+
+def test_a_quiet_section_still_gets_at_least_the_old_limit(db_path):
+    _seed_fact(db_path, message_id="m-one", author_id="alice", label="update", body="Deployed the export job to staging.")
+    gateway = _BudgetRecordingGateway([_draft(_line("m-one", "The export job was deployed to staging."))])
+
+    generate_daily_summary(CHANNEL_ID, DAY, make_config(), gateway, db_path=db_path)
+
+    assert gateway.max_tokens[0] >= 1024
+
+
 # --- grounding: only this section's own facts can ground a line ----------
 
 def test_a_line_claiming_a_real_but_unrelated_message_id_is_dropped_not_kept(db_path):

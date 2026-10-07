@@ -6293,3 +6293,13 @@ Eight deliberately messy messages (long paragraphs, no "Blocked:" labels) were p
 **Also in this change, on the P2 side (separate repo):** a bare "will be" no longer counts as a commitment ("no reminder will be sent ..." was being tracked), only before a done-word.
 
 **Scope.** Affects digests and classifications made after the runners restart. Already stored classifications and published digests are not rewritten; re-classifying today's messages needs a deliberate re-run.
+
+## 2026-10-07 -- A busy section no longer fails the whole digest: the answer limit grows with the facts
+
+**Found while previewing the fixes above.** With today's messages re-classified (the real update inside message D now counts), the "what moved" section had seven facts instead of six and the digest failed: the model's answer for that section was longer than the fixed 1024-token limit `generate_structured` applies, was cut off mid-answer, came back empty (`lines: Field required`) on all three attempts, and `StructuredOutputError` stopped the whole digest. Every failed call in the log shows exactly 1024 completion tokens. It had not happened before only because the previous day's sections happened to fit; any busy day would have hit it.
+
+**Change.** `_generate_section_lines` now passes `max_tokens` = 600 per fact, never below the old 1024 and never above 8192 (`_answer_budget` in `reporting/daily_summary.py`). A quiet section is asked exactly as before. Two tests: eight facts get well beyond 1024; one fact still gets at least 1024.
+
+**Not changed.** The weekly narrative (`reporting/weekly_summary.py`) is one short piece of prose rather than a line per fact, so it does not grow with the day; it keeps the default limit. The classifier already raises its own limit to 2048.
+
+**Verified.** The same re-classified copy of today's data that failed now produces its digest (one grounding retry, no failure).
