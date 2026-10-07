@@ -74,6 +74,7 @@ from p1.approval.write_guard import WriteRefusedError, guarded_send
 from p1.config.calendar import is_working_day
 from p1.config.schema import ChannelConfig
 from p1.prompts import PromptRegistry
+from p1.publishing.outcome_emission import emit_outcome_record
 from p1.reporting.daily_summary import generate_and_persist_daily_summary
 from p1.storage.db import DEFAULT_DB_PATH
 from p1.storage.digests_repo import DigestStore
@@ -135,6 +136,9 @@ def run_daily_digest_job(
     digest_result = generate_and_persist_daily_summary(
         channel_id, resolved_day, config, gateway, db_path=db_path, prompt_registry=prompt_registry,
     )
+    # Opt-in (P1_WRITE_OUTCOME_RECORDS=1): hand the day's grounded facts to P2 as the channel's outcome record. Adds no model
+    # or Teams call, posts and proposes nothing, and never fails this job -- see p1.publishing.outcome_emission.
+    emit_outcome_record(digest_result, config)
 
     publish_key = f"{channel_id}:{date_str}:daily_publish"
     proposal = proposal_store.get_by_idempotency_key(publish_key)
