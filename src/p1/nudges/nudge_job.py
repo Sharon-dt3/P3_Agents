@@ -69,6 +69,7 @@ from p1.approval.proposals import APPLIED, PENDING, REJECTED, ProposalStore
 from p1.approval.write_guard import WriteRefusedError, guarded_send
 from p1.config.calendar import is_working_day
 from p1.config.schema import ChannelConfig
+from p1.nudges.shared_cap import SharedCapUnavailableError, shared_cap_from_environment
 from p1.participation.ledger import (
     EXCLUDED,
     POSTED_NO_UPDATE,
@@ -87,6 +88,7 @@ DISABLED = "disabled"
 SKIPPED_NON_WORKING_DAY = "skipped_non_working_day"
 EXCLUDED_STATUS = "excluded"
 CAP_REACHED = "cap_reached"
+CAP_UNAVAILABLE = "cap_unavailable"
 AWAITING_APPROVAL = "awaiting_approval"
 REJECTED_STATUS = "rejected"
 ALREADY_SENT = "already_sent"
@@ -220,6 +222,19 @@ def _run_one_member(
             channel_id, member_id, date_str, CAP_REACHED,
             f"cap of {config.nudge_cap_per_day} nudge(s)/day already reached for this person today",
         )
+
+    # Opt-in estate-wide cap (p1.nudges.shared_cap): one person, one day, all channels, all agents. Off unless
+    # P1_SHARED_NUDGE_CAP_PER_DAY is set. Asked here, before a proposal exists, and again on every rerun, so a
+    # nudge approved late is still refused if another agent has chased the person in the meantime.
+    shared_cap = shared_cap_from_environment(db_path)
+    if shared_cap is not None:
+        try:
+            reading = shared_cap.reading(member_id, date_str)
+        except SharedCapUnavailableError as exc:
+            return NudgeResult(channel_id, member_id, date_str, CAP_UNAVAILABLE,
+                               f"nobody is nudged until the shared cap can be checked: {exc}")
+        if reading.reached:
+            return NudgeResult(channel_id, member_id, date_str, CAP_REACHED, reading.describe())
 
     sequence = sent_count_today + 1
     nudge_key = f"{channel_id}:{member_id}:{date_str}:{sequence}"

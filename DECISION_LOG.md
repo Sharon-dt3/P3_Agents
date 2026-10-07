@@ -6240,3 +6240,24 @@ A direct `GET /users/{id}` for both ids was attempted live against the real tena
 **Verified.** 10 new tests and 3 updated ones in `tests/unit/test_participation_rendering.py` (link present; only posted_no_update is touched; oldest-first and capped at 3; no permalink means no link; missing database means plain; distinct labels; unclassified message; the roster count, its absence without a roster size, and the all-contributed fallback). Full suite: 551 unit and 25 spine tests pass. Previewed read-only on real days: 2026-09-24 reads `2 of 3 roster members posted an update.` then `Himanshu Ranjan -- posted, but no update (1 message, labelled noise) (source)`.
 
 **Scope.** Affects digests generated after the runners restart; already published digests are not rewritten. Not done from the same list of ideas: the window on silent lines, streaks (needs a spec decision), and deleting stale rows from the stored `participation` table (nothing reads it).
+
+## 2026-10-07 -- An opt-in nudge cap shared with the other agents, so one person is never chased by two agents on the same day
+
+**Gap.** P1's `nudge_cap_per_day` is per person per CHANNEL and counts only P1's own `nudges` table. P2 (PM-24) now sends its own reminders about commitments and keeps a `nudges` table of the same shape; its cap can see P1's ledger, but P1 could not see P2's. A person P2 reminded in the morning could still be nudged by P1 in the evening: two agents, each inside its own limit, chasing one person.
+
+**Change.** New `p1/nudges/shared_cap.py` and one check in `run_nudge_job` (`_run_one_member`), right after the per-channel cap and before any proposal exists. It is OFF unless `P1_SHARED_NUDGE_CAP_PER_DAY` is set; with it unset P1 behaves exactly as before. Two environment variables, deliberately NOT a new `ChannelConfig` field (that would have meant a schema field, a database column, two loader paths and the Copilot Studio contract, for a setting that is about the estate, not a channel):
+
+- `P1_SHARED_NUDGE_CAP_PER_DAY` -- how many nudges one person may receive in a day from all agents together.
+- `P1_PEER_NUDGE_LEDGERS` -- comma-separated paths of the other agents' SQLite databases (P2's `data/pm.db`).
+
+A person's count is their DELIVERED nudges (a `sent_at`): P1's own in every channel, plus each peer ledger's. Peer ledgers are opened read-only and never written. The same person can have different ids in different systems (P1's live ledger uses Microsoft Graph user ids; P2's roster uses its own), so the peer count includes every id the person appears under there: their own, and those of peer people (`assignees`, or `members`) with the same display name, ignoring case and spacing; two peer people with one name are both counted.
+
+**Fails closed.** A listed peer ledger that is missing, locked, or not a ledger means nobody is nudged (`cap_unavailable`): not knowing whether someone was already chased is a reason to wait. A set but invalid cap value raises rather than falling back.
+
+**Checked again at send time.** The job is the only thing that sends a nudge, and it asks the cap on every run before sending, so a first nudge that waited for approval and is approved after another agent chased the person is refused (`cap_reached`), not sent.
+
+**Not done.** Escalations to the channel owner are not capped (the owner is not being chased). P1's day is its channel's local date and the peer stores its own project's, so near midnight across timezones a nudge can land on the neighbouring day.
+
+**Verified.** 22 new tests in `tests/unit/test_shared_nudge_cap.py` (off by default; a peer nudge today blocks, yesterday's or an undelivered one does not; the cap value is configuration; a nudge in another P1 channel counts; ids matched by name; unreadable and missing peers fail closed; the peer ledger is byte-identical afterwards; a late approval is refused). 11 bug injections (cap never consulted, computed but not applied, peers ignored, undelivered counted, unreadable treated as empty, off by one, names not matched, ...) each fail a test. The existing nudge and escalation tests are untouched and pass.
+
+**To switch it on.** Add to P1's `.env`, then restart the live runners: `P1_SHARED_NUDGE_CAP_PER_DAY=1` and `P1_PEER_NUDGE_LEDGERS=/path/to/P2_PM_Delivery_Steward/data/pm.db`. Use the same cap number as P2's `PM_NUDGE_CAP_PER_PERSON_PER_DAY`. Not switched on by this change.
